@@ -1,22 +1,18 @@
-all: clean os-image run
+all: clean
 
 clean:
 	rm -rf *.o *.bin *.iso isodir
 
-kernel.o: kernel/kernel.c
-	gcc -m32 -ffreestanding -c $< -o $@
-
-boot.o: boot/boot.s
+multiboot_header.o: boot/multiboot_header.s
 	nasm -f elf32 $< -o $@
 
-os.bin: linker.ld boot.o kernel.o
-	ld -m elf_i386 -T linker.ld -o $@ boot.o kernel.o
+kernel.o: kernel/kernel.c
+	x86_64-elf-gcc -m32 -ffreestanding -c $< -o $@
 
-os-image: os.bin
-	mkdir -p isodir/boot/grub
-	cp $< isodir/boot/os.bin
-	echo 'set timeout=0\nmenuentry "My OS" {\n multiboot /boot/os.bin\n}' > isodir/boot/grub/grub.cfg
-	grub-mkrescue -o os.iso isodir
+os.bin: multiboot_header.o kernel.o
+	x86_64-elf-ld -m elf_i386 -T linker.ld -o $@ multiboot_header.o kernel.o
 
-run:
-	qemu-system-i386 -cdrom os.iso
+# To build a bootable ISO, use:
+#   ./build_iso.sh
+# To run:
+#   qemu-system-i386 -cdrom os.iso

@@ -1,37 +1,33 @@
-# Ignore object files and binary outputs
+# Build artifacts
 *.o
 *.bin
+*.img
 *.iso
+isodir/
 
-# Ignore build directory contents (optional if dynamically generated)
-isodir/boot/os.bin
-isodir/boot/grub/*.cfg~
+# QEMU/VM images
+*.vdi
+*.vmdk
+*.vhd*
+*.qcow*
 
-# Ignore editor/OS-specific files
-*~
+# Editor/OS files
 .DS_Store
 Thumbs.db
-
-# Ignore backup files (e.g. from editors like Vim or Emacs)
+*~
 *.swp
 *.swo
 *.bak
 *.tmp
 
-# Ignore Makefile artifacts
+# Dependency files
 *.d
 
-# Ignore dependency files (if you use GCC's -MMD/-MD)
-*.d
-
-# Optional: Ignore boot and kernel outputs if generated
-boot.o
-kernel.o
-
-# Optional: If you want to ignore all generated files, uncomment below:
-# !*/             # Keep all folders
-# *.o
-# *.bin
-# *.iso
-# os.*
-# !Makefile       # But keep the Makefile
+# Exclude build scripts and config files from ignore
+!Makefile
+!Dockerfile
+!build_iso.sh
+!linker.ld
+!README.md
+!boot/
+!kernel/
