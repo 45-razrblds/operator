@@ -201,7 +201,6 @@ int test_memory() {
 
 void boot_sequence() {
     terminal_set_color(0x0F); // Bright white
-    set_keyboard_layout(DEFAULT_KEYBOARD_LAYOUT);
     terminal_writestring("OPERATOR v1.8 - Booting...\n\n");
     
     if (!test_vga()) halt_with_error("VGA test failed.");
@@ -458,9 +457,3 @@ void kernel_main() {
         }
     }
 }
-
-#ifndef __GNUC__
-#define asm(...)
-#endif
-
-#define DEFAULT_KEYBOARD_LAYOUT LAYOUT_QWERTZ
