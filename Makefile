@@ -1,4 +1,7 @@
-all: os-image
+all: clean os-image run
+
+clean:
+	rm -rf *.o *.bin *.iso isodir
 
 kernel.o: kernel/kernel.c
 	gcc -m32 -ffreestanding -c $< -o $@
@@ -17,6 +20,3 @@ os-image: os.bin
 
 run:
 	qemu-system-i386 -cdrom os.iso
-
-clean:
-	rm -rf *.o *.bin *.iso isodir
