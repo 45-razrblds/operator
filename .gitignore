@@ -1,0 +1,37 @@
+# Ignore object files and binary outputs
+*.o
+*.bin
+*.iso
+
+# Ignore build directory contents (optional if dynamically generated)
+isodir/boot/os.bin
+isodir/boot/grub/*.cfg~
+
+# Ignore editor/OS-specific files
+*~
+.DS_Store
+Thumbs.db
+
+# Ignore backup files (e.g. from editors like Vim or Emacs)
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Ignore Makefile artifacts
+*.d
+
+# Ignore dependency files (if you use GCC's -MMD/-MD)
+*.d
+
+# Optional: Ignore boot and kernel outputs if generated
+boot.o
+kernel.o
+
+# Optional: If you want to ignore all generated files, uncomment below:
+# !*/             # Keep all folders
+# *.o
+# *.bin
+# *.iso
+# os.*
+# !Makefile       # But keep the Makefile
