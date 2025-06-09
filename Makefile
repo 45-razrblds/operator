@@ -53,10 +53,16 @@ kernel/io.o: kernel/io.c kernel/io.h
 kernel/serial.o: kernel/serial.c kernel/serial.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-os.bin: multiboot_header.o kernel.o shutdown.o reboot.o memory.o timer.o terminal.o debug.o command.o opfs.o minilibc.o boot.o kernel/keyboard.o kernel/io.o kernel/serial.o
+kernel/net.o: kernel/net.c kernel/net.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+kernel/rtl8139.o: kernel/rtl8139.c kernel/rtl8139.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+os.bin: multiboot_header.o kernel.o shutdown.o reboot.o memory.o timer.o terminal.o debug.o command.o opfs.o minilibc.o boot.o kernel/keyboard.o kernel/io.o kernel/serial.o kernel/net.o kernel/rtl8139.o
 	x86_64-elf-ld -m elf_i386 -T linker.ld -o $@ $^
 
 # To build a bootable ISO, use:
 #   ./build_iso.sh
 # To run:
-#   qemu-system-i386 -cdrom os.iso
+#   qemu-system-i386 -cdrom os.iso -netdev user,id=net0 -device rtl8139,netdev=net0

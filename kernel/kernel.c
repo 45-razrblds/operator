@@ -12,6 +12,7 @@
 #include "opfs.h"
 #include "minilibc.h"
 #include "serial.h"
+#include "net.h"
 
 void draw_prompt(void) {
     terminal_set_color(0x0A);
@@ -56,6 +57,7 @@ void kernel_module_selfcheck(void) {
     print_status("Checking command module...", process_command != NULL);
     print_status("Checking OPFS module...", opfs_init && opfs_ls && opfs_cat && opfs_touch && opfs_edit && opfs_rm && opfs_mkdir && opfs_cd && opfs_pwd);
     print_status("Checking minilibc module...", memset && strlen && strcpy && strncmp && snprintf);
+    print_status("Checking network module...", net_init && net_send && net_receive);
 }
 
 void kernel_main(void) {
@@ -71,9 +73,12 @@ void kernel_main(void) {
     print_status("Operator OS kernel booting...", 1);
     print_status("Initializing modules...", 1);
     kernel_module_selfcheck();
+    print_status("Initializing network...", 1);
+    net_init();
     print_status("Running boot sequence...", 1);
     boot_sequence();
     print_status("Loading OPFS (Operator Pseudo Filesystem)...", 1);
+    print_status("(This will soon be real.)", 1);
     opfs_load();
     print_status("System ready. Type 'help' for commands.", 1);
     draw_prompt();

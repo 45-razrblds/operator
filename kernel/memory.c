@@ -12,6 +12,9 @@ void* malloc(size_t size) {
     }
     return ptr;
 }
+void free(void* ptr) {
+    // No operation for simple malloc implementation
+}
 size_t get_heap_used(void) {
     return (size_t)(heap_ptr - HEAP_START);
 }

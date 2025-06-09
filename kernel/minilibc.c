@@ -1,45 +1,78 @@
 #include "minilibc.h"
 #include <stddef.h>
 #include <stdarg.h>
+
 void* memset(void* s, int c, size_t n) {
     unsigned char* p = s;
     while (n--) *p++ = (unsigned char)c;
     return s;
 }
+
+void* memcpy(void* dest, const void* src, size_t n) {
+    unsigned char* d = dest;
+    const unsigned char* s = src;
+    while (n--) *d++ = *s++;
+    return dest;
+}
+
+void* memmove(void* dest, const void* src, size_t n) {
+    unsigned char* d = dest;
+    const unsigned char* s = src;
+    if (d == s) return dest;
+    
+    if (d < s) {
+        // Copy forwards if destination is before source
+        while (n--) *d++ = *s++;
+    } else {
+        // Copy backwards if destination is after source
+        d += n;
+        s += n;
+        while (n--) *--d = *--s;
+    }
+    return dest;
+}
+
 size_t strlen(const char* s) {
     size_t n = 0;
     while (s[n]) n++;
     return n;
 }
+
 char* strcpy(char* d, const char* s) {
     char* r = d;
     while ((*d++ = *s++));
     return r;
 }
+
 char* strncpy(char* d, const char* s, size_t n) {
     size_t i = 0;
     for (; i < n && s[i]; i++) d[i] = s[i];
     for (; i < n; i++) d[i] = 0;
     return d;
 }
+
 int strcmp(const char* s1, const char* s2) {
     while (*s1 && (*s1 == *s2)) { s1++; s2++; }
     return *(const unsigned char*)s1 - *(const unsigned char*)s2;
 }
+
 int strncmp(const char* s1, const char* s2, size_t n) {
     while (n && *s1 && (*s1 == *s2)) { s1++; s2++; n--; }
     if (n == 0) return 0;
     return *(const unsigned char*)s1 - *(const unsigned char*)s2;
 }
+
 char* strchr(const char* s, int c) {
     while (*s) { if (*s == (char)c) return (char*)s; s++; }
     return 0;
 }
+
 char* strrchr(const char* s, int c) {
     char* last = 0;
     while (*s) { if (*s == (char)c) last = (char*)s; s++; }
     return last;
 }
+
 char* strtok(char* str, const char* delim) {
     static char* last;
     if (str) last = str;
@@ -52,6 +85,7 @@ char* strtok(char* str, const char* delim) {
     if (*end) { *end = 0; last = end + 1; } else { last = 0; }
     return start;
 }
+
 int snprintf(char* buf, size_t n, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

@@ -6,40 +6,129 @@
 #include "reboot.h"
 #include "minilibc.h"
 #include "serial.h"
+#include "net.h"
+#include "timer.h"
+#include "timer.h"
+
+// ICMP echo (ping) packet structure
+typedef struct {
+    uint8_t type;      // ICMP type
+    uint8_t code;      // ICMP subtype
+    uint16_t checksum; // Internet checksum
+    uint16_t id;       // Identifier
+    uint16_t seq;      // Sequence number
+    uint8_t data[32];  // Data
+} __attribute__((packed)) icmp_packet_t;
+
+// IP header structure
+typedef struct {
+    uint8_t ver_ihl;   // Version and IHL
+    uint8_t tos;       // Type of Service
+    uint16_t len;      // Total length
+    uint16_t id;       // ID number
+    uint16_t frag;     // Fragment offset
+    uint8_t ttl;       // Time To Live
+    uint8_t proto;     // Protocol
+    uint16_t csum;     // Header checksum
+    uint32_t sip;      // Source IP
+    uint32_t dip;      // Destination IP
+} __attribute__((packed)) ip_header_t;
+
+// Calculate Internet checksum
+static uint16_t checksum(void* addr, int count) {
+    uint16_t* ptr = addr;
+    uint32_t sum = 0;
+    
+    while (count > 1) {
+        sum += *ptr++;
+        count -= 2;
+    }
+    
+    if (count > 0)
+        sum += *((uint8_t*)ptr);
+    
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    
+    return ~sum;
+}
 
 char input_buffer[256];
 int input_pos = 0;
 extern int debug_mode;
 
-// Helper: trim leading/trailing whitespace and newlines in-place
-static void trim_input(char* buf) {
-    // Trim leading
-    char* p = buf;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-    if (p != buf) {
-        char* d = buf;
-        while (*p) *d++ = *p++;
-        *d = 0;
-    }
-    // Trim trailing
-    int len = strlen(buf);
-    while (len > 0 && (buf[len-1] == ' ' || buf[len-1] == '\t' || buf[len-1] == '\r' || buf[len-1] == '\n'))
-        buf[--len] = 0;
-}
-
 void process_command() {
-    serial_writestring("[SERIAL] process_command() entry\n");
-    serial_writestring("[SERIAL] input_buffer: ");
-    serial_writestring(input_buffer);
-    serial_writestring("\n");
+    // Trim leading/trailing whitespace
+    char* start = input_buffer;
+    char* end = input_buffer + strlen(input_buffer) - 1;
     
-    trim_input(input_buffer);
+    while (*start == ' ' || *start == '\t') start++;
+    while (end > start && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
+    *(end + 1) = 0;
     
-    serial_writestring("[SERIAL] input_buffer after trim: ");
-    serial_writestring(input_buffer);
-    serial_writestring("\n");
+    if (start != input_buffer) {
+        memmove(input_buffer, start, strlen(start) + 1);
+    }
 
-    if (strncmp(input_buffer, "ls", 2) == 0) {
+    if (strncmp(input_buffer, "ping", 4) == 0) {
+        // Create an ICMP echo request packet
+        uint8_t packet[sizeof(ip_header_t) + sizeof(icmp_packet_t)];
+        ip_header_t* ip = (ip_header_t*)packet;
+        icmp_packet_t* icmp = (icmp_packet_t*)(packet + sizeof(ip_header_t));
+        
+        // Fill IP header
+        ip->ver_ihl = 0x45;  // IPv4, 5 words
+        ip->tos = 0;
+        ip->len = sizeof(packet);
+        ip->id = 0;
+        ip->frag = 0;
+        ip->ttl = 64;
+        ip->proto = 1;  // ICMP
+        ip->csum = 0;
+        ip->sip = 0x0A000002;  // 10.0.0.2
+        ip->dip = 0x0A000001;  // 10.0.0.1 (gateway)
+        ip->csum = checksum(ip, sizeof(ip_header_t));
+        
+        // Fill ICMP packet
+        icmp->type = 8;  // Echo request
+        icmp->code = 0;
+        icmp->checksum = 0;
+        icmp->id = 1;
+        icmp->seq = 1;
+        memset(icmp->data, 0x41, sizeof(icmp->data));  // Fill with 'A's
+        icmp->checksum = checksum(icmp, sizeof(icmp_packet_t));
+        
+        terminal_writestring("Sending ping to 10.0.0.1...\n");
+        if (net_send(packet, sizeof(packet)) > 0) {
+            terminal_writestring("Ping sent, waiting for reply...\n");
+            
+            // Wait for reply with timeout
+            uint8_t reply[sizeof(packet)];
+            int tries = 10;  // 1 second timeout
+            while (tries-- > 0) {
+                int len = net_receive(reply, sizeof(reply));
+                if (len > 0) {
+                    ip_header_t* rip = (ip_header_t*)reply;
+                    icmp_packet_t* ricmp = (icmp_packet_t*)(reply + sizeof(ip_header_t));
+                    if (ricmp->type == 0) {  // Echo reply
+                        terminal_set_color(0x0A);
+                        terminal_writestring("Reply received!\n");
+                        terminal_set_color(0x07);
+                        return;
+                    }
+                }
+                delay_ms(100);  // Wait 100ms between tries
+            }
+            terminal_set_color(0x0C);
+            terminal_writestring("No reply received (timeout)\n");
+            terminal_set_color(0x07);
+        } else {
+            terminal_set_color(0x0C);
+            terminal_writestring("Failed to send ping\n");
+            terminal_set_color(0x07);
+        }
+        return;
+    } else if (strncmp(input_buffer, "ls", 2) == 0) {
         char* arg = input_buffer+2; while (*arg == ' ') arg++;
         opfs_ls(*arg ? arg : NULL);
     } else if (strncmp(input_buffer, "cat ", 4) == 0) {
@@ -89,6 +178,87 @@ void process_command() {
         terminal_writestring("  shutdown       - Power off the system\n");
         terminal_writestring("  reboot         - Restart the system\n");
         terminal_writestring("  help           - Show this help message\n");
+        terminal_writestring("  ping           - Send a network ping request\n");
+        terminal_writestring("  netstat        - Display network status\n");
+    } else if (strncmp(input_buffer, "ping", 4) == 0) {
+        if (!net_is_initialized()) {
+            terminal_set_color(0x0C);
+            terminal_writestring("Network not initialized\n");
+            terminal_set_color(0x07);
+            return;
+        }
+        
+        char* arg = input_buffer + 4;
+        while (*arg == ' ') arg++;
+        
+        if (!*arg) {
+            terminal_writestring("Usage: ping <ip>\n");
+            terminal_writestring("Example: ping 10.0.2.2\n");
+            return;
+        }
+        
+        // Parse IP address (e.g., "10.0.2.2")
+        uint32_t ip = 0;
+        int octet = 0;
+        uint8_t* ip_bytes = (uint8_t*)&ip;
+        char* start = arg;
+        
+        for (int i = 0; i < 4; i++) {
+            while (*arg && *arg != '.') {
+                if (*arg < '0' || *arg > '9') {
+                    terminal_writestring("Invalid IP address\n");
+                    return;
+                }
+                octet = octet * 10 + (*arg - '0');
+                arg++;
+            }
+            
+            if (octet > 255) {
+                terminal_writestring("Invalid IP address\n");
+                return;
+            }
+            
+            ip_bytes[i] = octet;
+            octet = 0;
+            
+            if (i < 3) {
+                if (*arg != '.') {
+                    terminal_writestring("Invalid IP address format\n");
+                    return;
+                }
+                arg++;
+            }
+        }
+        
+        terminal_writestring("Pinging ");
+        terminal_writestring(start);
+        terminal_writestring("...\n");
+        
+        if (net_ping(ip) == 0) {
+            terminal_set_color(0x0A);
+            terminal_writestring("Ping successful!\n");
+        } else {
+            terminal_set_color(0x0C);
+            terminal_writestring("Ping failed!\n");
+        }
+        terminal_set_color(0x07);
+    } else if (strncmp(input_buffer, "netstat", 7) == 0) {
+        // Display network interface status
+        terminal_writestring("Network Interface Status:\n");
+        terminal_writestring("----------------------\n");
+        terminal_writestring("Device: RTL8139\n");
+        terminal_writestring("Status: ");
+        if (net_is_initialized()) {
+            terminal_set_color(0x0A);
+            terminal_writestring("Connected\n");
+            terminal_set_color(0x07);
+            terminal_writestring("IP: 10.0.2.15\n");
+            terminal_writestring("MAC: 52:54:00:12:34:56\n");
+        } else {
+            terminal_set_color(0x0C);
+            terminal_writestring("Disconnected\n");
+        }
+        terminal_set_color(0x07);
     } else if (strncmp(input_buffer, "clear", 5) == 0) {
         terminal_initialize();
         // draw_banner();

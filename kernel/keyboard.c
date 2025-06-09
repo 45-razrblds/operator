@@ -46,6 +46,9 @@ const char* get_layout_name(void) {
 }
 
 uint16_t scancode_to_ascii(uint8_t scancode) {
+    // Handle special case for ESC key (scancode 0x01)
+    if (scancode == 0x01) return KEY_ESC;
+
     if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; return 0; }
     if (scancode == 0xAA || scancode == 0xB6) { shift_pressed = 0; return 0; }
     static int is_extended = 0;

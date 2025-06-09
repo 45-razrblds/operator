@@ -9,13 +9,20 @@ void halt_cpu(void) {
 }
 
 void shutdown(void) {
-    // Try ACPI shutdown first
-    // Port 0x604 is common for ACPI shutdown on emulators like QEMU
-    // Write 0x2000 to shutdown
-    outb(0x604, 0x02);
+    // Try QEMU-specific ACPI shutdown sequence
+    outw(0xB004, 0x2000);  // QEMU ACPI PM1a_CNT_BLK port
     
-    // If that didn't work, try another common QEMU method
-    // Write "Shutdown" to the QEMU debug port
+    // Try standard ACPI shutdown sequence
+    outw(0x604, 0x2000);   // Another common ACPI port
+    
+    // Try APM power off (port 0x47 and 0xF4)
+    outb(0x47, 0x20);
+    outb(0xF4, 0x00);
+    
+    // Try keyboard controller shutdown
+    outb(0x64, 0xFE);
+    
+    // If nothing worked, try QEMU debug port
     const char* s = "Shutdown";
     while (*s) outb(0x8900, *s++);
     
