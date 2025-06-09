@@ -1,7 +1,5 @@
 #include <stdint.h>
-
-// I/O port functions
-void outb(uint16_t port, uint8_t val);
+#include "io.h"
 
 // Use x86 ACPI shutdown sequence
 void halt_cpu(void) {

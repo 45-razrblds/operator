@@ -1,8 +1,5 @@
 #include <stdint.h>
-
-// I/O port functions
-void outb(uint16_t port, uint8_t val);
-uint8_t inb(uint16_t port);
+#include "io.h"
 
 // Use x86 keyboard controller to trigger system reset
 void reboot(void) {
