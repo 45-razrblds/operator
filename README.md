@@ -1,11 +1,11 @@
 # Operator OS
 
-![Language](https://img.shields.io/badge/language-C-blue.svg?style=flat)
-![Assembly](https://img.shields.io/badge/assembly-NASM-orange.svg?style=flat)
-![Architecture](https://img.shields.io/badge/arch-i386-green.svg?style=flat)
-![Build](https://img.shields.io/badge/build-Make-red.svg?style=flat)
-![Emulator](https://img.shields.io/badge/emulator-QEMU-purple.svg?style=flat)
-![Bootloader](https://img.shields.io/badge/bootloader-GRUB-yellow.svg?style=flat)
+![Language](https://img.shields.io/badge/language-C-blue.svg?style=flat-square)
+![Assembly](https://img.shields.io/badge/assembly-NASM-orange.svg?style=flat-square)
+![Architecture](https://img.shields.io/badge/arch-i386-green.svg?style=flat-square)
+![Build](https://img.shields.io/badge/build-Make-red.svg?style=flat-square)
+![Emulator](https://img.shields.io/badge/emulator-QEMU-purple.svg?style=flat-square)
+![Bootloader](https://img.shields.io/badge/bootloader-GRUB-yellow.svg?style=flat-square&logo=GRUB&logoColor=white)
 
 A 32-bit operating system targeting the i386 architecture. Built with C and x86 assembly, using GRUB as bootloader and QEMU for emulation and testing.
 
