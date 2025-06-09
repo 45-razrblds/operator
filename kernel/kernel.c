@@ -1,11 +1,27 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "keyboard.h"  // Keyboard layout support
+#include <stdbool.h>
+#include "shutdown.h"  // Shutdown support
+#include "reboot.h"    // Reboot support
 
+// --- Forward declarations ---
+void draw_banner(void);
+void draw_prompt(void);
+char* strchr(const char* s, int c);
+
+// --- Minimal stdarg.h for freestanding kernel (x86) ---
+typedef __builtin_va_list va_list;
+#define va_start(ap, last) __builtin_va_start(ap, last)
+#define va_arg(ap, type)   __builtin_va_arg(ap, type)
+#define va_end(ap)         __builtin_va_end(ap)
+
+// --- Constants and globals ---
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 #define VGA_MEMORY 0xB8000
 
+// Terminal state
 static uint16_t* terminal_buffer;
 static uint16_t terminal_row;
 static uint16_t terminal_column;
@@ -13,13 +29,16 @@ static uint8_t terminal_color;
 static char input_buffer[256];
 static int input_pos = 0;
 
-// Simple bump allocator heap start and size
+// Debug mode state
+static int debug_mode = 0;
+static uint16_t debug_row_start = VGA_HEIGHT - 3;  // Default value for debug row start
+
+// Memory allocator state
 #define HEAP_START 0x1000000
 #define HEAP_SIZE  0x100000
-
 static uintptr_t heap_ptr = HEAP_START;
 
-// Timer tick count
+// Timer state
 volatile uint32_t timer_ticks = 0;
 
 // --- Terminal functions ---
@@ -39,16 +58,16 @@ void terminal_putchar(char c) {
     if (c == '\n') {
         terminal_column = 0;
         terminal_row++;
-        if (terminal_row >= VGA_HEIGHT) {
+        if (terminal_row >= (debug_mode ? debug_row_start : VGA_HEIGHT)) {
             // Scroll up
-            for (int y = 0; y < VGA_HEIGHT - 1; y++) {
+            for (int y = 0; y < (debug_mode ? debug_row_start : VGA_HEIGHT) - 1; y++) {
                 for (int x = 0; x < VGA_WIDTH; x++) {
                     terminal_buffer[y * VGA_WIDTH + x] = terminal_buffer[(y + 1) * VGA_WIDTH + x];
                 }
             }
             // Clear last line
             for (int x = 0; x < VGA_WIDTH; x++) {
-                terminal_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = (terminal_color << 8) | ' ';
+                terminal_buffer[((debug_mode ? debug_row_start : VGA_HEIGHT) - 1) * VGA_WIDTH + x] = (terminal_color << 8) | ' ';
             }
             terminal_row--;
         }
@@ -61,6 +80,10 @@ void terminal_putchar(char c) {
             terminal_buffer[terminal_row * VGA_WIDTH + terminal_column] = (terminal_color << 8) | ' ';
         }
         return;
+    }
+    
+    if (debug_mode && terminal_row >= debug_row_start) {
+        terminal_row = debug_row_start - 1;
     }
     
     terminal_buffer[terminal_row * VGA_WIDTH + terminal_column] = (terminal_color << 8) | c;
@@ -79,6 +102,21 @@ void terminal_writestring(const char* str) {
 
 void terminal_set_color(uint8_t color) {
     terminal_color = color;
+}
+
+void draw_prompt() {
+    terminal_set_color(0x0A); // Green
+    terminal_writestring("> ");
+    terminal_set_color(0x07); // Reset to default color
+}
+
+void draw_banner() {
+    terminal_set_color(0x0B); // Light cyan
+//  terminal_writestring("\xC9\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xBB\n");
+    terminal_writestring("                    OPERATOR OS - A Simple Terminal OS                         \n");
+//  terminal_writestring("\xC8\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xBB\n");
+    terminal_set_color(0x07); // Reset to default color
+    terminal_writestring("\n");
 }
 
 // --- I/O port functions ---
@@ -215,7 +253,7 @@ void boot_sequence() {
 
 // --- Keyboard input ---
 
-char get_keyboard_char() {
+uint16_t get_keyboard_char() {
     uint8_t status = inb(0x64);
     if (status & 0x01) {
         uint8_t scancode = inb(0x60);
@@ -224,236 +262,516 @@ char get_keyboard_char() {
     return 0;
 }
 
-// --- String helper functions (same as your code) ---
+// --- Minimal libc replacements for bare-metal ---
+// String functions need to be in correct dependency order
+void* memset(void* s, int c, size_t n) {
+    unsigned char* p = s;
+    while (n--) *p++ = (unsigned char)c;
+    return s;
+}
 
-int str_compare(const char* str1, const char* str2, int len) {
-    for (int i = 0; i < len; i++) {
-        if (str1[i] != str2[i]) return 0;
+size_t strlen(const char* s) {
+    size_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+char* strcpy(char* d, const char* s) {
+    char* r = d;
+    while ((*d++ = *s++));
+    return r;
+}
+
+char* strncpy(char* d, const char* s, size_t n) {
+    size_t i = 0;
+    for (; i < n && s[i]; i++) d[i] = s[i];
+    for (; i < n; i++) d[i] = 0;
+    return d;
+}
+
+int strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+int strncmp(const char* s1, const char* s2, size_t n) {
+    while (n && *s1 && (*s1 == *s2)) { s1++; s2++; n--; }
+    if (n == 0) return 0;
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+char* strchr(const char* s, int c) {
+    while (*s) { if (*s == (char)c) return (char*)s; s++; }
+    return 0;
+}
+
+char* strrchr(const char* s, int c) {
+    char* last = 0;
+    while (*s) { if (*s == (char)c) last = (char*)s; s++; }
+    return last;
+}
+
+// Simple strtok (not thread safe)
+char* strtok(char* str, const char* delim) {
+    static char* last;
+    if (str) last = str;
+    if (!last) return 0;
+    char* start = last;
+    while (*start && strchr(delim, *start)) start++;
+    if (!*start) { last = 0; return 0; }
+    char* end = start;
+    while (*end && !strchr(delim, *end)) end++;
+    if (*end) { *end = 0; last = end + 1; } else { last = 0; }
+    return start;
+}
+
+// Minimal snprintf: only supports %d and %s, no width/flags
+int snprintf(char* buf, size_t n, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    size_t i = 0;
+    for (; *fmt && i < n-1; fmt++) {
+        if (*fmt == '%') {
+            fmt++;
+            if (*fmt == 'd') {
+                int v = va_arg(ap, int);
+                char tmp[16];
+                int j = 0, neg = 0;
+                if (v < 0) { neg = 1; v = -v; }
+                do { tmp[j++] = '0' + (v % 10); v /= 10; } while (v && j < 15);
+                if (neg) tmp[j++] = '-';
+                while (j-- && i < n-1) buf[i++] = tmp[j];
+            } else if (*fmt == 's') {
+                char* s = va_arg(ap, char*);
+                while (*s && i < n-1) buf[i++] = *s++;
+            }
+        } else {
+            buf[i++] = *fmt;
+        }
     }
-    return 1;
+    buf[i] = 0;
+    va_end(ap);
+    return i;
 }
 
-int starts_with(const char* str, const char* prefix, int str_len, int prefix_len) {
-    if (str_len < prefix_len) return 0;
-    return str_compare(str, prefix, prefix_len);
+// --- Operator File System (opfs) ---
+#define OPFS_MAX_FILES 32
+#define OPFS_MAX_DIRS 16
+#define OPFS_MAX_FILENAME 32
+#define OPFS_MAX_FILESIZE 1024
+#define OPFS_MAX_PATH 128
+#define OPFS_MAX_CHILDREN 16
+
+// File types
+typedef enum { OPFS_FILE, OPFS_DIR } opfs_type_t;
+
+typedef struct opfs_node {
+    opfs_type_t type;
+    char name[OPFS_MAX_FILENAME];
+    struct opfs_node* parent;
+    union {
+        struct {
+            char content[OPFS_MAX_FILESIZE];
+            size_t size;
+            uint32_t created;
+            uint32_t modified;
+        } file;
+        struct {
+            struct opfs_node* children[OPFS_MAX_CHILDREN];
+            int child_count;
+        } dir;
+    } data;
+} opfs_node_t;
+
+// Root directory
+static opfs_node_t opfs_root;
+static opfs_node_t* opfs_cwd = &opfs_root;
+
+// --- opfs helpers ---
+
+void opfs_init() {
+    memset(&opfs_root, 0, sizeof(opfs_root));
+    opfs_root.type = OPFS_DIR;
+    strcpy(opfs_root.name, "/");
+    opfs_root.parent = NULL;
+    opfs_root.data.dir.child_count = 0;
+    opfs_cwd = &opfs_root;
+    // Add example files
+    opfs_node_t* f1 = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    memset(f1, 0, sizeof(opfs_node_t));
+    f1->type = OPFS_FILE;
+    strcpy(f1->name, "readme.txt");
+    strcpy(f1->data.file.content, "Welcome to OPERATOR OS!\nType 'help' for commands.");
+    f1->data.file.size = strlen(f1->data.file.content);
+    f1->parent = &opfs_root;
+    opfs_root.data.dir.children[opfs_root.data.dir.child_count++] = f1;
+    opfs_node_t* f2 = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    memset(f2, 0, sizeof(opfs_node_t));
+    f2->type = OPFS_FILE;
+    strcpy(f2->name, "notes.txt");
+    strcpy(f2->data.file.content, "This is a simple text file.\nYou can edit me!");
+    f2->data.file.size = strlen(f2->data.file.content);
+    f2->parent = &opfs_root;
+    opfs_root.data.dir.children[opfs_root.data.dir.child_count++] = f2;
 }
 
-// --- Command processing (unchanged) ---
+// Find node by name in a directory
+opfs_node_t* opfs_find_in_dir(opfs_node_t* dir, const char* name) {
+    if (!dir || dir->type != OPFS_DIR) return NULL;
+    for (int i = 0; i < dir->data.dir.child_count; i++) {
+        if (strcmp(dir->data.dir.children[i]->name, name) == 0) {
+            return dir->data.dir.children[i];
+        }
+    }
+    return NULL;
+}
 
-void process_command() {
-    terminal_putchar('\n');
-    if (input_pos > 0) {
-        input_buffer[input_pos] = '\0';
-        
-        if (str_compare(input_buffer, "help", input_pos) && input_pos == 4) {
-            terminal_writestring("Available commands:\n");
-            terminal_writestring("help       - Show this help message\n");
-            terminal_writestring("clear      - Clear the screen\n");
-            terminal_writestring("layout     - Show/change keyboard layout\n");
-            terminal_writestring("echo <msg> - Echo the provided message\n");
-            terminal_writestring("about      - Show system information\n");
-            terminal_writestring("reboot     - Reboot the system\n");
+// Parse path and return node (absolute or relative)
+opfs_node_t* opfs_resolve(const char* path) {
+    if (!path || !*path) return opfs_cwd;
+    opfs_node_t* node = (path[0] == '/') ? &opfs_root : opfs_cwd;
+    char buf[OPFS_MAX_PATH];
+    strncpy(buf, path, OPFS_MAX_PATH-1); buf[OPFS_MAX_PATH-1] = 0;
+    char* token = strtok(buf, "/");
+    while (token) {
+        if (strcmp(token, "..") == 0) {
+            if (node->parent) node = node->parent;
+        } else if (strcmp(token, ".") == 0) {
+            // do nothing
+        } else {
+            node = opfs_find_in_dir(node, token);
+            if (!node) return NULL;
         }
-        else if (str_compare(input_buffer, "clear", input_pos) && input_pos == 5) {
-            terminal_initialize();
-            terminal_writestring("OPERATOR v1.8\n");
-            terminal_writestring("Type 'help' for available commands.\n");
+        token = strtok(NULL, "/");
+    }
+    return node;
+}
+
+// --- opfs commands ---
+
+void opfs_ls(const char* path) {
+    opfs_node_t* dir = path ? opfs_resolve(path) : opfs_cwd;
+    if (!dir || dir->type != OPFS_DIR) {
+        terminal_set_color(0x0C); terminal_writestring("Not a directory.\n"); terminal_set_color(0x07); return;
+    }
+    terminal_set_color(0x0E);
+    terminal_writestring("Name             Type    Size\n");
+    for (int i = 0; i < dir->data.dir.child_count; i++) {
+        opfs_node_t* n = dir->data.dir.children[i];
+        terminal_writestring(n->name);
+        for (int j = strlen(n->name); j < 16; j++) terminal_putchar(' ');
+        terminal_writestring((n->type == OPFS_DIR) ? "<DIR>   " : "<FILE>  ");
+        if (n->type == OPFS_FILE) {
+            char sz[8];
+            snprintf(sz, 8, "%d", (int)n->data.file.size);
+            terminal_writestring(sz);
         }
-        else if (starts_with(input_buffer, "layout", input_pos, 6)) {
-            if (input_pos == 6) {
-                terminal_writestring("Current keyboard layout: ");
-                terminal_writestring(get_layout_name());
-                terminal_writestring("\nUsage: layout qwerty | layout qwertz\n");
-            } else if (starts_with(input_buffer, "layout qwerty", input_pos, 13) && input_pos == 13) {
-                set_keyboard_layout(LAYOUT_QWERTY);
-                terminal_writestring("Keyboard layout set to QWERTY.\n");
-            } else if (starts_with(input_buffer, "layout qwertz", input_pos, 13) && input_pos == 13) {
-                set_keyboard_layout(LAYOUT_QWERTZ);
-                terminal_writestring("Keyboard layout set to QWERTZ.\n");
-            } else {
-                terminal_writestring("Invalid layout command. Use 'layout qwerty' or 'layout qwertz'.\n");
-            }
-        }
-        else if (starts_with(input_buffer, "echo", input_pos, 4)) {
-            if (input_pos > 5) {
-                terminal_writestring(input_buffer + 5);
-                terminal_putchar('\n');
-            }
-        }
-        else if (str_compare(input_buffer, "about", input_pos) && input_pos == 5) {
-            terminal_writestring("OPERATOR v1.8 - Simple bootloader & CLI\n");
-            terminal_writestring("Author: txhc\n");
-            terminal_writestring("This is a minimal OS prototype.\n");
-        }
-        else if (str_compare(input_buffer, "reboot", input_pos) && input_pos == 6) {
-            terminal_writestring("Rebooting...\n");
-            halt(); // Replaces invalid far jump with halt
-        }
-        else if (str_compare(input_buffer, "debug", input_pos) && input_pos == 5) {
-            // Enter debug environment
-            void debug_env();
-            debug_env();
-        }
-        else {
-            terminal_writestring("Unknown command: ");
-            terminal_writestring(input_buffer);
+        terminal_writestring("\n");
+    }
+    terminal_set_color(0x07);
+}
+
+void opfs_cat(const char* path) {
+    opfs_node_t* f = opfs_resolve(path);
+    if (!f || f->type != OPFS_FILE) {
+        terminal_set_color(0x0C); terminal_writestring("File not found.\n"); terminal_set_color(0x07); return;
+    }
+    terminal_set_color(0x0A);
+    terminal_writestring(f->data.file.content);
+    terminal_writestring("\n");
+    terminal_set_color(0x07);
+}
+
+void opfs_touch(const char* path) {
+    char buf[OPFS_MAX_PATH]; strncpy(buf, path, OPFS_MAX_PATH-1); buf[OPFS_MAX_PATH-1]=0;
+    char* last = strrchr(buf, '/');
+    opfs_node_t* dir = opfs_cwd;
+    char* fname = buf;
+    if (last) {
+        *last = 0;
+        dir = opfs_resolve(buf);
+        fname = last+1;
+    }
+    if (!dir || dir->type != OPFS_DIR) { terminal_set_color(0x0C); terminal_writestring("Invalid path.\n"); terminal_set_color(0x07); return; }
+    if (opfs_find_in_dir(dir, fname)) { terminal_writestring("File exists.\n"); return; }
+    opfs_node_t* f = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    memset(f, 0, sizeof(opfs_node_t));
+    f->type = OPFS_FILE;
+    strcpy(f->name, fname);
+    f->parent = dir;
+    dir->data.dir.children[dir->data.dir.child_count++] = f;
+    terminal_writestring("File created.\n");
+}
+
+void opfs_edit(const char* path) {
+    opfs_node_t* f = opfs_resolve(path);
+    if (!f || f->type != OPFS_FILE) {
+        terminal_set_color(0x0C); terminal_writestring("File not found.\n"); terminal_set_color(0x07); return;
+    }
+    terminal_set_color(0x0D);
+    terminal_writestring("Editing "); terminal_writestring(f->name); terminal_writestring(". Press ESC to save and exit.\n"); terminal_set_color(0x07);
+    int pos = 0;
+    memset(f->data.file.content, 0, OPFS_MAX_FILESIZE);
+    while (1) {
+        uint16_t c = get_keyboard_char();
+        if (c == KEY_ESC) break;
+        if (c == '\r' || c == '\n') { 
+            f->data.file.content[pos++] = '\n'; 
             terminal_putchar('\n');
         }
+        else if (c == '\b') { 
+            if (pos > 0) { 
+                pos--; 
+                terminal_putchar('\b');
+            }
+        }
+        else if (pos < OPFS_MAX_FILESIZE-1 && c >= 32 && c < 127) { 
+            f->data.file.content[pos++] = (char)c;
+            terminal_putchar((char)c);
+        }
     }
-    input_pos = 0;
+    f->data.file.content[pos] = 0;
+    f->data.file.size = pos;
+    terminal_writestring("\nSaved.\n");
 }
 
-// --- Debug environment ---
-void debug_env() {
-    char debug_buffer[128];
-    int debug_pos = 0;
-    terminal_set_color(0x0E); // Yellow
-    terminal_writestring("\n[DEBUG MODE]\nType 'help' to list debug commands.\n");
-    terminal_set_color(0x07);
-    terminal_writestring("DEBUG> ");
+void opfs_rm(const char* path) {
+    opfs_node_t* f = opfs_resolve(path);
+    if (!f || f == &opfs_root || !f->parent) { terminal_writestring("Cannot remove.\n"); return; }
+    opfs_node_t* dir = f->parent;
+    int idx = -1;
+    for (int i = 0; i < dir->data.dir.child_count; i++) {
+        if (dir->data.dir.children[i] == f) { idx = i; break; }
+    }
+    if (idx >= 0) {
+        for (int i = idx; i < dir->data.dir.child_count-1; i++)
+            dir->data.dir.children[i] = dir->data.dir.children[i+1];
+        dir->data.dir.child_count--;
+        terminal_writestring("Removed.\n");
+    }
+}
+
+void opfs_mkdir(const char* path) {
+    char buf[OPFS_MAX_PATH]; strncpy(buf, path, OPFS_MAX_PATH-1); buf[OPFS_MAX_PATH-1]=0;
+    char* last = strrchr(buf, '/');
+    opfs_node_t* dir = opfs_cwd;
+    char* dname = buf;
+    if (last) { *last = 0; dir = opfs_resolve(buf); dname = last+1; }
+    if (!dir || dir->type != OPFS_DIR) { terminal_set_color(0x0C); terminal_writestring("Invalid path.\n"); terminal_set_color(0x07); return; }
+    if (opfs_find_in_dir(dir, dname)) { terminal_writestring("Exists.\n"); return; }
+    opfs_node_t* d = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    memset(d, 0, sizeof(opfs_node_t));
+    d->type = OPFS_DIR;
+    strcpy(d->name, dname);
+    d->parent = dir;
+    dir->data.dir.children[dir->data.dir.child_count++] = d;
+    terminal_writestring("Directory created.\n");
+}
+
+void opfs_cd(const char* path) {
+    opfs_node_t* d = opfs_resolve(path);
+    if (!d || d->type != OPFS_DIR) { terminal_set_color(0x0C); terminal_writestring("Not a directory.\n"); terminal_set_color(0x07); return; }
+    opfs_cwd = d;
+}
+
+void opfs_pwd() {
+    char stack[OPFS_MAX_PATH][OPFS_MAX_FILENAME];
+    int sp = 0;
+    opfs_node_t* n = opfs_cwd;
+    while (n && n != &opfs_root) {
+        strcpy(stack[sp++], n->name);
+        n = n->parent;
+    }
+    terminal_writestring("/");
+    for (int i = sp-1; i >= 0; i--) {
+        terminal_writestring(stack[i]);
+        if (i > 0) terminal_writestring("/");
+    }
+    terminal_writestring("\n");
+}
+
+// --- Debug mode functions ---
+
+void draw_debug_info() {
+    if (!debug_mode) return;
+    
+    // Save current state
+    uint16_t old_row = terminal_row;
+    uint16_t old_col = terminal_column;
+    uint8_t old_color = terminal_color;
+    
+    // Force cursor position to a safe area if needed
+    if (terminal_row >= debug_row_start) {
+        terminal_row = debug_row_start - 1;
+        terminal_column = 0;
+    }
+    
+    // Draw separator line directly to buffer
+    for (int i = 0; i < VGA_WIDTH; i++) {
+        terminal_buffer[debug_row_start * VGA_WIDTH + i] = (0x07 << 8) | '-';
+    }
+    
+    // Clear debug area
+    for (int i = debug_row_start + 1; i < VGA_HEIGHT; i++) {
+        for (int j = 0; j < VGA_WIDTH; j++) {
+            terminal_buffer[i * VGA_WIDTH + j] = (0x07 << 8) | ' ';
+        }
+    }
+    
+    // Calculate memory usage
+    size_t used = heap_ptr - HEAP_START;
+    size_t total = HEAP_SIZE;
+    size_t percent = (used * 100) / total;
+    
+    // Format memory usage info
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Memory Usage: %d/%d KB (%d%%)", 
+             (int)(used/1024), (int)(total/1024), (int)percent);
+    
+    // Write memory usage info directly to buffer
+    int pos = 0;
+    int debug_line = debug_row_start + 1;
+    for (int i = 0; buf[i] && pos < VGA_WIDTH; i++) {
+        terminal_buffer[debug_line * VGA_WIDTH + pos++] = (0x0B << 8) | buf[i];
+    }
+    
+    // Add two spaces before the bar
+    pos += 2;
+    
+    // Draw memory usage bar
+    int bar_width = VGA_WIDTH - pos - 2; // Leave space for brackets
+    if (bar_width > 40) bar_width = 40;  // Cap bar width
+    
+    // Draw opening bracket
+    terminal_buffer[debug_line * VGA_WIDTH + pos++] = (0x07 << 8) | '[';
+    
+    // Draw filled portion of bar
+    int filled = (bar_width * percent) / 100;
+    uint8_t bar_color = percent > 90 ? 0x0C : percent > 70 ? 0x0E : 0x0A;
+    
+    for (int i = 0; i < filled && pos < VGA_WIDTH - 1; i++) {
+        terminal_buffer[debug_line * VGA_WIDTH + pos++] = (bar_color << 8) | '|';
+    }
+    
+    // Draw empty portion of bar
+    for (int i = filled; i < bar_width && pos < VGA_WIDTH - 1; i++) {
+        terminal_buffer[debug_line * VGA_WIDTH + pos++] = (0x08 << 8) | '.';
+    }
+    
+    // Draw closing bracket
+    terminal_buffer[debug_line * VGA_WIDTH + pos++] = (0x07 << 8) | ']';
+    
+    // Keep cursor position above debug area
+    terminal_row = old_row >= debug_row_start ? debug_row_start - 1 : old_row;
+    terminal_column = old_row >= debug_row_start ? 0 : old_col;
+    terminal_color = old_color;
+}
+
+void toggle_debug_mode() {
+    debug_mode = !debug_mode;
+    if (debug_mode) {
+        debug_row_start = VGA_HEIGHT - 3;  // Reserve bottom 3 rows for debug info
+        terminal_writestring("Debug mode enabled.\n");
+    } else {
+        terminal_writestring("Debug mode disabled.\n");
+    }
+}
+
+// Update process_command to handle debug command
+void process_command() {
+    if (strncmp(input_buffer, "ls", 2) == 0) {
+        char* arg = input_buffer+2; while (*arg == ' ') arg++;
+        opfs_ls(*arg ? arg : NULL);
+    } else if (strncmp(input_buffer, "cat ", 4) == 0) {
+        opfs_cat(input_buffer+4);
+    } else if (strncmp(input_buffer, "edit ", 5) == 0) {
+        opfs_edit(input_buffer+5);
+    } else if (strncmp(input_buffer, "touch ", 6) == 0) {
+        opfs_touch(input_buffer+6);
+    } else if (strncmp(input_buffer, "rm ", 3) == 0) {
+        opfs_rm(input_buffer+3);
+    } else if (strncmp(input_buffer, "mkdir ", 6) == 0) {
+        opfs_mkdir(input_buffer+6);
+    } else if (strncmp(input_buffer, "rmdir ", 6) == 0) {
+        opfs_rm(input_buffer+6);
+    } else if (strncmp(input_buffer, "cd ", 3) == 0) {
+        opfs_cd(input_buffer+3);
+    } else if (strncmp(input_buffer, "pwd", 3) == 0) {
+        opfs_pwd();
+    } else if (strncmp(input_buffer, "debug", 5) == 0) {
+        toggle_debug_mode();
+    } else if (strncmp(input_buffer, "shutdown", 8) == 0) {
+        terminal_set_color(0x0C);
+        terminal_writestring("\nShutting down...\n");
+        terminal_set_color(0x07);
+        delay(100); // Give time for message to be seen
+        shutdown();
+    } else if (strncmp(input_buffer, "reboot", 6) == 0) {
+        terminal_set_color(0x0C);
+        terminal_writestring("\nRebooting...\n");
+        terminal_set_color(0x07);
+        delay(100); // Give time for message to be seen
+        reboot();
+    } else if (strncmp(input_buffer, "help", 4) == 0) {
+        terminal_set_color(0x0F);
+        terminal_writestring("Available commands:\n");
+        terminal_set_color(0x07);
+        terminal_writestring("  ls [dir]       - List files and directories\n");
+        terminal_writestring("  cat <file>     - Display file contents\n");
+        terminal_writestring("  edit <file>    - Edit file contents (ESC to save and exit)\n");
+        terminal_writestring("  touch <file>   - Create a new empty file\n");
+        terminal_writestring("  rm <file|dir>  - Remove a file or directory\n");
+        terminal_writestring("  mkdir <dir>    - Create a new directory\n");
+        terminal_writestring("  cd <dir>       - Change current directory\n");
+        terminal_writestring("  pwd            - Print working directory\n");
+        terminal_writestring("  clear          - Clear the screen\n");
+        terminal_writestring("  debug          - Toggle debug mode\n");
+        terminal_writestring("  shutdown       - Power off the system\n");
+        terminal_writestring("  reboot         - Restart the system\n");
+        terminal_writestring("  help           - Show this help message\n");
+    } else if (strncmp(input_buffer, "clear", 5) == 0) {
+        terminal_initialize();
+        draw_banner();
+    } else {
+        terminal_writestring("Unknown command. Type 'help'.\n");
+    }
+    input_pos = 0;
+    memset(input_buffer, 0, sizeof(input_buffer));
+    if (debug_mode) draw_debug_info();
+}
+
+// Update kernel_main to periodically refresh debug info
+void kernel_main() {
+    terminal_initialize();
+    draw_banner();
+    boot_sequence();
+    opfs_init();
+    draw_prompt();
+    uint32_t last_debug_update = 0;
+    
     while (1) {
-        char c = get_keyboard_char();
+        uint16_t c = get_keyboard_char();
         if (c) {
             if (c == '\r' || c == '\n') {
                 terminal_putchar('\n');
-                debug_buffer[debug_pos] = '\0';
-                // --- Command parsing ---
-                if (debug_pos == 4 && str_compare(debug_buffer, "exit", 4)) {
-                    terminal_writestring("Exiting debug mode.\n");
-                    break;
-                } else if (debug_pos == 4 && str_compare(debug_buffer, "help", 4)) {
-                    terminal_writestring("Debug commands:\n");
-                    terminal_writestring("help         - Show this help\n");
-                    terminal_writestring("exit         - Return to normal mode\n");
-                    terminal_writestring("ticks        - Show timer tick count\n");
-                    terminal_writestring("alloc        - Test memory allocation\n");
-                    terminal_writestring("color <n>    - Set terminal color (hex)\n");
-                    terminal_writestring("echo <msg>   - Echo a message\n");
-                    terminal_writestring("vga          - Test VGA output\n");
-                    terminal_writestring("clear        - Clear the screen\n");
-                    terminal_writestring("info         - Show system info\n");
-                    terminal_writestring("keys         - Wait for and show keypress\n");
-                    terminal_writestring("fail         - Simulate a failure and halt\n");
-                } else if (debug_pos == 5 && str_compare(debug_buffer, "ticks", 5)) {
-                    char buf[32];
-                    uint32_t t = get_system_ticks();
-                    terminal_writestring("Ticks: ");
-                    // Simple itoa
-                    int i = 30; buf[31] = '\0';
-                    if (t == 0) buf[i--] = '0';
-                    while (t && i >= 0) { buf[i--] = '0' + (t % 10); t /= 10; }
-                    terminal_writestring(&buf[i+1]);
-                    terminal_putchar('\n');
-                } else if (debug_pos == 5 && str_compare(debug_buffer, "alloc", 5)) {
-                    void* p = malloc(32);
-                    terminal_writestring("Allocated 32 bytes at: 0x");
-                    char hex[9];
-                    uintptr_t addr = (uintptr_t)p;
-                    for (int j = 7; j >= 0; j--) {
-                        int v = (addr >> (j*4)) & 0xF;
-                        hex[7-j] = v < 10 ? '0'+v : 'A'+(v-10);
-                    }
-                    hex[8] = '\0';
-                    terminal_writestring(hex);
-                    terminal_putchar('\n');
-                } else if (debug_pos > 6 && str_compare(debug_buffer, "color ", 6)) {
-                    // Parse color value
-                    int val = 0;
-                    for (int k = 6; debug_buffer[k] != '\0'; k++) {
-                        char ch = debug_buffer[k];
-                        if (ch >= '0' && ch <= '9') val = val*16 + (ch-'0');
-                        else if (ch >= 'A' && ch <= 'F') val = val*16 + (ch-'A'+10);
-                        else if (ch >= 'a' && ch <= 'f') val = val*16 + (ch-'a'+10);
-                        else break;
-                    }
-                    terminal_set_color((uint8_t)val);
-                    terminal_writestring("Color set.\n");
-                } else if (debug_pos > 5 && str_compare(debug_buffer, "echo ", 5)) {
-                    terminal_writestring(debug_buffer+5);
-                    terminal_putchar('\n');
-                } else if (debug_pos == 3 && str_compare(debug_buffer, "vga", 3)) {
-                    test_vga();
-                } else if (debug_pos == 5 && str_compare(debug_buffer, "clear", 5)) {
-                    terminal_initialize();
-                    terminal_writestring("[DEBUG MODE]\n");
-                } else if (debug_pos == 4 && str_compare(debug_buffer, "info", 4)) {
-                    terminal_writestring("System info:\n");
-                    terminal_writestring("Version: v1.8\n");
-                    terminal_writestring("Heap ptr: 0x");
-                    char hex[9];
-                    uintptr_t addr = (uintptr_t)heap_ptr;
-                    for (int j = 7; j >= 0; j--) {
-                        int v = (addr >> (j*4)) & 0xF;
-                        hex[7-j] = v < 10 ? '0'+v : 'A'+(v-10);
-                    }
-                    hex[8] = '\0';
-                    terminal_writestring(hex);
-                    terminal_writestring("\n");
-                } else if (debug_pos == 4 && str_compare(debug_buffer, "keys", 4)) {
-                    terminal_writestring("Press any key...\n");
-                    uint8_t status = 0, sc = 0;
-                    char ch = 0;
-                    while (!ch) {
-                        status = inb(0x64);
-                        if (status & 0x01) {
-                            sc = inb(0x60);
-                            ch = scancode_to_ascii(sc);
-                        }
-                    }
-                    terminal_writestring("Scancode: 0x");
-                    char shex[3];
-                    shex[0] = "0123456789ABCDEF"[(sc>>4)&0xF];
-                    shex[1] = "0123456789ABCDEF"[sc&0xF];
-                    shex[2] = '\0';
-                    terminal_writestring(shex);
-                    terminal_writestring(", ASCII: ");
-                    terminal_putchar(ch ? ch : '?');
-                    terminal_putchar('\n');
-                } else if (debug_pos == 4 && str_compare(debug_buffer, "fail", 4)) {
-                    halt_with_error("Simulated failure in debug mode.");
-                } else {
-                    terminal_writestring("Unknown debug command: ");
-                    terminal_writestring(debug_buffer);
-                    terminal_putchar('\n');
-                }
-                debug_pos = 0;
-                terminal_writestring("DEBUG> ");
-            } else if (c == '\b') {
-                if (debug_pos > 0) {
-                    debug_pos--;
-                    terminal_putchar('\b');
-                }
-            } else if (debug_pos < (int)(sizeof(debug_buffer) - 1)) {
-                debug_buffer[debug_pos++] = c;
-                terminal_putchar(c);
-            }
-        }
-    }
-    terminal_set_color(0x07);
-}
-
-// --- Main entry point ---
-
-void kernel_main() {
-    terminal_initialize();
-    boot_sequence();
-    terminal_writestring("> ");
-    
-    while (1) {
-        char c = get_keyboard_char();
-        if (c) {
-            if (c == '\r' || c == '\n') {
                 process_command();
-                terminal_writestring("> ");
+                draw_prompt();
             } else if (c == '\b') {
                 if (input_pos > 0) {
                     input_pos--;
                     terminal_putchar('\b');
                 }
-            } else if (input_pos < (int)(sizeof(input_buffer) - 1)) {
-                input_buffer[input_pos++] = c;
-                terminal_putchar(c);
+            } else if (c < 128 && input_pos < (int)(sizeof(input_buffer) - 1)) {
+                input_buffer[input_pos++] = (char)c;
+                terminal_putchar((char)c);
             }
+        }
+        
+        // Update debug info every ~1 second
+        uint32_t current_ticks = get_system_ticks();
+        if (debug_mode && current_ticks - last_debug_update > 100) {
+            draw_debug_info();
+            last_debug_update = current_ticks;
         }
     }
 }
