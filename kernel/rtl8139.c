@@ -71,10 +71,12 @@
 #define INT_LEN_CHG     0x2000
 #define INT_SYSTEM_ERR  0x8000
 
-#define TCR_IFG_STD      0x03000000  /* Interframe Gap Time */
-#define TCR_MXDMA_512   0x00700000  /* Max DMA burst size (512 bytes) */
+#define TCR_IFG96        0x03000000  /* Inter-frame gap time */
+#define TCR_MXDMA_2048  0x00600000  /* Max DMA burst size 2048 bytes */
 #define TCR_CRC         0x00010000  /* Append CRC */
-#define TCR_NORMAL      (TCR_IFG_STD | TCR_MXDMA_512 | TCR_CRC)
+#define TCR_RETRY_TX     0x00040000  /* Enable TX retry */
+#define TCR_CLEAR_ABORT  0x00000001  /* Clear abort */
+#define TCR_NORMAL      (TCR_IFG96 | TCR_MXDMA_2048 | TCR_CRC | TCR_RETRY_TX)
 
 #define RCR_ACCEPT_ALL   0x0000000F  /* Accept all packets */
 #define RCR_AB          0x00000008  /* Accept Broadcast packets */
@@ -83,7 +85,7 @@
 #define RCR_AAP         0x00000001  /* Accept All Packets */
 #define RCR_MXDMA_1024  0x00000600  /* Max DMA burst size (1024 bytes) */
 #define RCR_RXFTH_1     0x00008000  /* Receive FIFO Threshold (1 byte) */
-#define RCR_NORMAL      (RCR_AB | RCR_AM | RCR_APM | RCR_MXDMA_1024 | RCR_RXFTH_1)
+#define RCR_NORMAL      (RCR_AB | RCR_AM | RCR_APM | RCR_AAP | RCR_MXDMA_1024 | RCR_RXFTH_1)
 
 static uint16_t iobase;
 static uint8_t* rx_buffer;
@@ -174,20 +176,46 @@ void rtl8139_init(void) {
     // Set Rx Buffer
     outl(iobase + RX_BUF, (uint32_t)rx_buffer);
     
-    // Configure receive and transmit with proper settings
-    outl(iobase + TCR, TCR_NORMAL);  // Set normal transmit configuration
-    outl(iobase + RCR, RCR_NORMAL);  // Set normal receive configuration
+    // Write configuration register (0x52)
+    // 0x20 = Auto-negotiate, 0x08 = Enable Auto-Negotiation
+    outb(iobase + CONFIG_1, 0x28);
     
-    // Set all transmit slots to owned by host
+    // Configure transmit settings:
+    // - Use higher DMA burst size
+    // - Enable auto-retry on error
+    // - Set IFG to recommended value
+    uint32_t tcr_value = TCR_IFG96 | TCR_MXDMA_2048 | TCR_CRC | TCR_RETRY_TX;
+    outl(iobase + TCR, tcr_value);
+    
+    // Enable early TX/RX for better performance
+    outw(iobase + RX_EARLY_CNT, 0x08);
+    
+    // Reset all transmit slots
     for (int i = 0; i < 4; i++) {
         outl(iobase + TX_STATUS0 + (i * 4), 0);
+        outl(iobase + TX_ADDR0 + (i * 4), 0);
     }
     
-    // Enable Tx/Rx
+    // Configure receiver:
+    // - Accept broadcast/multicast/all packets
+    // - Use large DMA burst size
+    uint32_t rcr_value = RCR_AB | RCR_AM | RCR_APM | RCR_AAP | RCR_MXDMA_1024 | RCR_RXFTH_1;
+    outl(iobase + RCR, rcr_value);
+    
+    // Reset pointers
+    outl(iobase + CAPR, 0);
+    outl(iobase + 0x44, 0);  // CBR
+    
+    // Enable Tx/Rx - do this after all configuration
     outb(iobase + CMD, CMD_RX_ENABLE | CMD_TX_ENABLE);
     
-    // Enable interrupts (ROK | TOK)
-    outw(iobase + IMR, 0x0005);
+    // Enable all useful interrupts
+    uint16_t imr_value = INT_ROK | INT_TOK | INT_RXERR | INT_TXERR | 
+                        INT_RX_BUFF_OF | INT_LINK_CHG | INT_RX_FIFO_OF;
+    outw(iobase + IMR, imr_value);
+    
+    // Clear any pending interrupts
+    outw(iobase + ISR, 0xffff);
     
     rx_offset = 0;
     
@@ -198,6 +226,7 @@ int rtl8139_send(const void* data, size_t len) {
     if (len > 1792) return -1;  // Max MTU
     
     static int tx_slot = 0;
+    int timeout;
     
     terminal_writestring("[rtl8139] Sending packet (");
     char lenbuf[8];
@@ -212,102 +241,108 @@ int rtl8139_send(const void* data, size_t len) {
     terminal_putchar('0' + tx_slot);
     terminal_writestring("\n");
     
-    // Check transmit status and wait for slot to be free
-    int timeout = 1000;
-    while ((inl(iobase + TX_STATUS0 + (tx_slot * 4)) & TX_HOST_OWNS) != 0) {
-        uint32_t tx_status = inl(iobase + TX_STATUS0 + (tx_slot * 4));
+    // Get initial status
+    uint32_t tx_status = inl(iobase + TX_STATUS0 + (tx_slot * 4));
+    
+    // If slot is busy, try to reset it
+    if (tx_status & TX_HOST_OWNS) {
+        terminal_writestring("[rtl8139] Resetting busy TX slot\n");
+        outl(iobase + TX_STATUS0 + (tx_slot * 4), 0);
+        outw(iobase + ISR, INT_TOK); // Clear any pending TX interrupt
         
-        if (tx_status & TX_ABORTED) {
-            terminal_writestring("[rtl8139] Previous TX aborted!\n");
-            // Reset the transmitter
-            outl(iobase + TX_STATUS0 + (tx_slot * 4), 0);
-            break;
-        }
-        if (tx_status & TX_UNDERRUN) {
-            terminal_writestring("[rtl8139] Previous TX underrun!\n");
-            // Reset the transmitter
-            outl(iobase + TX_STATUS0 + (tx_slot * 4), 0);
-            break;
-        }
-        if (tx_status & TX_CARRIER_LOST) {
-            terminal_writestring("[rtl8139] Previous TX lost carrier!\n");
-            // Reset the transmitter
-            outl(iobase + TX_STATUS0 + (tx_slot * 4), 0);
-            break;
+        // Wait briefly for reset to take effect
+        timeout = 100;
+        while ((inl(iobase + TX_STATUS0 + (tx_slot * 4)) & TX_HOST_OWNS) && timeout > 0) {
+            timeout--;
         }
         
-        // Clear any pending TX OK interrupt
-        if (inw(iobase + ISR) & INT_TOK) {
-            outw(iobase + ISR, INT_TOK);
-            break;
-        }
-        
-        if (--timeout == 0) {
-            terminal_writestring("[rtl8139] TX buffer not free!\n");
-            return -1;
+        if (timeout == 0) {
+            terminal_writestring("[rtl8139] Failed to reset TX slot, trying next one\n");
+            tx_slot = (tx_slot + 1) % 4;
+            return rtl8139_send(data, len); // Try again with next slot
         }
     }
     
-    // Clear the status register for this slot
+    // Clear any old status
     outl(iobase + TX_STATUS0 + (tx_slot * 4), 0);
     
     // Allocate and copy to a 32-bit aligned buffer
-    uint8_t* tx_buf = (uint8_t*)malloc(len + 4);  // Extra space for alignment
+    uint8_t* tx_buf = (uint8_t*)malloc(len + 4);
     if (!tx_buf) {
         terminal_writestring("[rtl8139] Failed to allocate TX buffer!\n");
         return -1;
     }
     
-    // Align buffer to 32-bit boundary
+    // Align buffer and copy data
     uint8_t* aligned_buf = (uint8_t*)(((uintptr_t)tx_buf + 3) & ~3);
     memcpy(aligned_buf, data, len);
     
-    // Send the packet
+    // Set up and start transmission
     outl(iobase + TX_ADDR0 + (tx_slot * 4), (uint32_t)aligned_buf);
-    outl(iobase + TX_STATUS0 + (tx_slot * 4), len & 0x1FFF);  // Trigger transmission
+    outl(iobase + TX_STATUS0 + (tx_slot * 4), (len & 0x1FFF) | TX_HOST_OWNS);
     
-    // Wait for transmission to complete or error
+    // Wait for completion
     timeout = 1000;
-    while (1) {
-        uint32_t tx_status = inl(iobase + TX_STATUS0 + (tx_slot * 4));
-        uint16_t isr = inw(iobase + ISR);
+    while (timeout > 0) {
+        tx_status = inl(iobase + TX_STATUS0 + (tx_slot * 4));
         
-        // Check for TX OK
-        if (isr & INT_TOK) {
-            outw(iobase + ISR, INT_TOK);  // Clear the interrupt
+        // Check for completion
+        if (!(tx_status & TX_HOST_OWNS)) {
             if (tx_status & TX_STAT_OK) {
-                break;  // Transmission successful
+                terminal_writestring("[rtl8139] TX completed successfully\n");
+                outw(iobase + ISR, INT_TOK);
+                free(tx_buf);
+                tx_slot = (tx_slot + 1) % 4;
+                return len;
+            }
+            // Check for errors
+            if (tx_status & (TX_ABORTED | TX_UNDERRUN | TX_CARRIER_LOST)) {
+                if (tx_status & TX_ABORTED) terminal_writestring("[rtl8139] TX aborted!\n");
+                if (tx_status & TX_UNDERRUN) terminal_writestring("[rtl8139] TX buffer underrun!\n");
+                if (tx_status & TX_CARRIER_LOST) terminal_writestring("[rtl8139] TX lost carrier!\n");
+                free(tx_buf);
+                tx_slot = (tx_slot + 1) % 4;
+                return -1;
             }
         }
         
-        // Check for errors
-        if (tx_status & (TX_ABORTED | TX_UNDERRUN | TX_CARRIER_LOST)) {
-            if (tx_status & TX_ABORTED) terminal_writestring("[rtl8139] TX aborted!\n");
-            if (tx_status & TX_UNDERRUN) terminal_writestring("[rtl8139] TX buffer underrun!\n");
-            if (tx_status & TX_CARRIER_LOST) terminal_writestring("[rtl8139] TX lost carrier!\n");
-            break;
-        }
-        
-        if (--timeout == 0) {
-            terminal_writestring("[rtl8139] TX completion timeout!\n");
-            break;
-        }
+        timeout--;
     }
     
-    // Free the transmit buffer
-    free(tx_buf);  // Free the original buffer, not the aligned pointer
-    
-    tx_slot = (tx_slot + 1) % 4;  // Use next transmit slot next time
-    
-    return len;
+    terminal_writestring("[rtl8139] TX completion timeout!\n");
+    free(tx_buf);
+    tx_slot = (tx_slot + 1) % 4;
+    return -1;
 }
 
 int rtl8139_receive(void* buf, size_t maxlen) {
     // Check if packet is available
     uint16_t status = inw(iobase + ISR);
-    if (!(status & (INT_ROK | INT_RXERR | INT_RX_BUFF_OF | INT_RX_FIFO_OF))) {
-        // Only print status if it's not just a TX OK
-        if (status != INT_TOK) {
+    
+    // Handle receive errors first
+    if (status & (INT_RXERR | INT_RX_BUFF_OF | INT_RX_FIFO_OF)) {
+        terminal_writestring("[rtl8139] RX error detected: ");
+        if (status & INT_RXERR) terminal_writestring("general error ");
+        if (status & INT_RX_BUFF_OF) terminal_writestring("buffer overflow ");
+        if (status & INT_RX_FIFO_OF) terminal_writestring("FIFO overflow ");
+        terminal_writestring("\n");
+        
+        // Clear error flags
+        outw(iobase + ISR, INT_RXERR | INT_RX_BUFF_OF | INT_RX_FIFO_OF);
+        
+        // Reset receiver
+        uint8_t cmd = inb(iobase + CMD);
+        outb(iobase + CMD, cmd & ~CMD_RX_ENABLE);  // Disable receiver
+        outl(iobase + RX_BUF, (uint32_t)rx_buffer);  // Reset buffer
+        rx_offset = 0;
+        outb(iobase + CMD, cmd | CMD_RX_ENABLE);  // Re-enable receiver
+        return -1;
+    }
+    
+    // Check for new packet
+    if (!(status & INT_ROK)) {
+        // Only print status if it's not empty and not just a TX OK
+        if (status != 0 && status != INT_TOK) {
             terminal_writestring("[rtl8139] No packet available (ISR=");
             char hexbuf[5];
             for (int i = 0; i < 4; i++) {
@@ -321,14 +356,25 @@ int rtl8139_receive(void* buf, size_t maxlen) {
         return 0;
     }
     
-    // Clear RX interrupts
-    outw(iobase + ISR, INT_ROK | INT_RXERR | INT_RX_BUFF_OF | INT_RX_FIFO_OF);
+    // Clear ROK interrupt
+    outw(iobase + ISR, INT_ROK);
     
-    // Get packet size and status
+    // Read packet header
     uint16_t rx_status = *(uint16_t*)(rx_buffer + rx_offset);
     uint16_t rx_len = *(uint16_t*)(rx_buffer + rx_offset + 2);
     
-    if ((rx_status & RX_OK) == 0) {
+    terminal_writestring("[rtl8139] Packet received (");
+    char lenbuf[8];
+    int i = 0;
+    int tlen = rx_len;
+    do {
+        lenbuf[i++] = '0' + (tlen % 10);
+        tlen /= 10;
+    } while (tlen > 0);
+    while (i > 0) terminal_putchar(lenbuf[--i]);
+    terminal_writestring(" bytes)\n");
+    
+    if (!(rx_status & RX_OK)) {
         terminal_writestring("[rtl8139] Packet error: ");
         if (rx_status & RX_BAD) terminal_writestring("bad packet ");
         if (rx_status & RX_FAE) terminal_writestring("frame alignment error ");
@@ -337,36 +383,26 @@ int rtl8139_receive(void* buf, size_t maxlen) {
         if (rx_status & RX_RUNT) terminal_writestring("too short ");
         if (rx_status & RX_INVALID) terminal_writestring("invalid ");
         terminal_writestring("\n");
-        return 0;
-    }
-    
-    if (rx_len > maxlen || rx_len < 64) {  // 64 bytes is minimum valid Ethernet frame size
-        terminal_writestring("[rtl8139] Invalid packet length: ");
-        char lenbuf[8];
-        int i = 0;
-        int tlen = rx_len;
-        do {
-            lenbuf[i++] = '0' + (tlen % 10);
-            tlen /= 10;
-        } while (tlen > 0);
-        while (i > 0) terminal_putchar(lenbuf[--i]);
-        terminal_writestring(" bytes\n");
         return -1;
     }
     
-    // Skip status and length fields
-    rx_offset += 4;
+    // Validate packet length
+    if (rx_len > maxlen || rx_len < 64) {
+        terminal_writestring("[rtl8139] Invalid packet length\n");
+        return -1;
+    }
     
-    // Copy packet to user buffer
-    memcpy(buf, rx_buffer + rx_offset, rx_len);
+    // Copy packet to user buffer (skip status and length fields)
+    memcpy(buf, rx_buffer + rx_offset + 4, rx_len);
     
-    // Update rx offset
-    rx_offset = (rx_offset + rx_len + 4 + 3) & ~3;
-    if (rx_offset > 8192) rx_offset -= 8192;
-    outw(iobase + CAPR, rx_offset - 16);
+    // Update rx_offset
+    rx_offset = (rx_offset + rx_len + 4 + 3) & ~3;  // Align to 32-bit boundary
+    if (rx_offset > 8192) {
+        rx_offset -= 8192;
+    }
     
-    // Clear interrupt
-    outw(iobase + ISR, 0x01);
+    // Update CAPR - Must be 16 bytes behind
+    outw(iobase + CAPR, (rx_offset - 16) & 0xFFFF);
     
     return rx_len;
 }

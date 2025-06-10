@@ -1,4 +1,4 @@
-#include <stdint.h>
+#include "reboot.h"
 #include "io.h"
 
 // Use x86 keyboard controller to trigger system reset

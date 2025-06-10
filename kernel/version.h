@@ -2,8 +2,8 @@
 #define VERSION_H
 
 #define OS_VERSION "1.8"
-#define BUILD_NUMBER "20250609.2052.420864e"
-#define BUILD_DATE "2025-06-09 20:52:58"
+#define BUILD_NUMBER "20250610.2135.5cd92bb"
+#define BUILD_DATE "2025-06-10 21:35:19"
 
 const char* get_os_version(void) { return OS_VERSION; }
 const char* get_build_number(void) { return BUILD_NUMBER; }

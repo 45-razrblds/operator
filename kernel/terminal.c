@@ -55,3 +55,28 @@ void terminal_writestring(const char* str) {
 void terminal_set_color(uint8_t color) {
     terminal_color = color;
 }
+
+// Simple RGB to VGA color mapping (4-bit)
+static uint8_t rgb_to_vga(uint8_t r, uint8_t g, uint8_t b) {
+    // Map to 16-color VGA palette (simple heuristic)
+    if (r > 200 && g < 80 && b > 200) return 0x05; // magenta
+    if (r < 80 && g > 200 && b > 200) return 0x0B; // cyan
+    if (r > 200 && g < 80 && b < 80)  return 0x04; // red
+    if (r < 80 && g > 200 && b < 80)  return 0x02; // green
+    if (r < 80 && g < 80 && b > 200)  return 0x01; // blue
+    if (r > 200 && g > 200 && b < 80) return 0x0E; // yellow
+    if (r > 200 && g > 200 && b > 200) return 0x0F; // white
+    if (r < 80 && g < 80 && b < 80)   return 0x00; // black
+    if (r > 200) return 0x0C; // light red
+    if (g > 200) return 0x0A; // light green
+    if (b > 200) return 0x09; // light blue
+    return 0x07; // light gray as fallback
+}
+
+void terminal_setcolor_rgb(uint8_t r, uint8_t g, uint8_t b) {
+    terminal_color = rgb_to_vga(r, g, b);
+}
+
+void terminal_setcolor_default(void) {
+    terminal_color = 0x07;
+}

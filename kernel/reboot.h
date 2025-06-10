@@ -1,7 +1,6 @@
 #ifndef REBOOT_H
 #define REBOOT_H
 
-// Reboot function
-void reboot(void);
+void reboot();
 
 #endif // REBOOT_H

@@ -9,6 +9,7 @@
 #include "net.h"
 #include "timer.h"
 #include "timer.h"
+#include "ideation.h"
 
 // ICMP echo (ping) packet structure
 typedef struct {
@@ -56,6 +57,10 @@ static uint16_t checksum(void* addr, int count) {
 char input_buffer[256];
 int input_pos = 0;
 extern int debug_mode;
+
+// Add this declaration if not already present:
+void command_register(const char* name, void (*handler)(void));
+void command_register_hidden(const char* name, void (*handler)(void));
 
 void process_command() {
     // Trim leading/trailing whitespace
@@ -262,10 +267,27 @@ void process_command() {
     } else if (strncmp(input_buffer, "clear", 5) == 0) {
         terminal_initialize();
         // draw_banner();
+    } else if (strcmp(input_buffer, "ideation") == 0) {
+        ideation_command();
     } else {
         terminal_writestring("Unknown command. Type 'help'.\n");
     }
     input_pos = 0;
     memset(input_buffer, 0, 256);
     if (debug_mode) draw_debug_info();
+}
+
+void command_register(const char* name, void (*handler)(void)) {
+    // ...existing code...
+}
+
+void command_register_hidden(const char* name, void (*handler)(void)) {
+    // Just call the normal registration for now
+    command_register(name, handler);
+}
+
+void command_init(void) {
+    // ...existing code...
+    command_register_hidden("ideation", ideation_command);
+    // ...existing code...
 }

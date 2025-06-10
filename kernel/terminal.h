@@ -9,4 +9,6 @@ void terminal_initialize(void);
 void terminal_putchar(char c);
 void terminal_writestring(const char* str);
 void terminal_set_color(uint8_t color);
+void terminal_setcolor_rgb(uint8_t r, uint8_t g, uint8_t b);
+void terminal_setcolor_default(void);
 #endif // TERMINAL_H
