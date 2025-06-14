@@ -2,6 +2,7 @@
 #define KEYBOARD_H
 
 #include <stdint.h>
+#include "error.h"
 
 // Special key codes (using values above normal ASCII range)
 #define KEY_ESC    0x1B    // 27 (ASCII ESC)
@@ -32,5 +33,22 @@ uint16_t scancode_to_ascii(uint8_t scancode);
 
 // Function to get the character corresponding to the last pressed key
 uint16_t get_keyboard_char(void);
+
+// Keyboard-Initialisierung
+int keyboard_init(void);
+
+// Keyboard-Handler
+void keyboard_handler(void);
+
+// Keyboard-Eingabe
+uint16_t keyboard_getchar(void);
+
+// Keyboard-Funktionen
+int keyboard_is_key_pressed(uint8_t scancode);
+void keyboard_wait_for_key(void);
+
+// Keyboard-Fehlerbehandlung
+enum error_code_t keyboard_get_last_error(void);
+const char* keyboard_get_error_message(void);
 
 #endif // KEYBOARD_H

@@ -1,6 +1,7 @@
 #include "minilibc.h"
 #include <stddef.h>
 #include <stdarg.h>
+#include <stdint.h>
 
 void* memset(void* s, int c, size_t n) {
     unsigned char* p = s;
@@ -86,30 +87,72 @@ char* strtok(char* str, const char* delim) {
     return start;
 }
 
-int snprintf(char* buf, size_t n, const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    size_t i = 0;
-    for (; *fmt && i < n-1; fmt++) {
-        if (*fmt == '%') {
-            fmt++;
-            if (*fmt == 'd') {
-                int v = va_arg(ap, int);
-                char tmp[16];
-                int j = 0, neg = 0;
-                if (v < 0) { neg = 1; v = -v; }
-                do { tmp[j++] = '0' + (v % 10); v /= 10; } while (v && j < 15);
-                if (neg) tmp[j++] = '-';
-                while (j-- && i < n-1) buf[i++] = tmp[j];
-            } else if (*fmt == 's') {
-                char* s = va_arg(ap, char*);
-                while (*s && i < n-1) buf[i++] = *s++;
+// Einfache vsnprintf-Implementierung
+int vsnprintf(char* str, size_t size, const char* format, va_list args) {
+    int i = 0;
+    char c;
+    
+    while ((c = *format++) != '\0' && i < size - 1) {
+        if (c == '%') {
+            c = *format++;
+            switch (c) {
+                case 'd': {
+                    int num = va_arg(args, int);
+                    // Einfache Dezimal-Konvertierung
+                    if (num < 0) {
+                        str[i++] = '-';
+                        num = -num;
+                    }
+                    int temp = num;
+                    int digits = 0;
+                    do {
+                        temp /= 10;
+                        digits++;
+                    } while (temp > 0);
+                    
+                    temp = num;
+                    for (int j = digits - 1; j >= 0; j--) {
+                        str[i + j] = '0' + (temp % 10);
+                        temp /= 10;
+                    }
+                    i += digits;
+                    break;
+                }
+                case 's': {
+                    const char* s = va_arg(args, const char*);
+                    while (*s && i < size - 1) {
+                        str[i++] = *s++;
+                    }
+                    break;
+                }
+                case 'c': {
+                    char ch = (char)va_arg(args, int);
+                    str[i++] = ch;
+                    break;
+                }
+                case '%': {
+                    str[i++] = '%';
+                    break;
+                }
+                default:
+                    str[i++] = '%';
+                    str[i++] = c;
+                    break;
             }
         } else {
-            buf[i++] = *fmt;
+            str[i++] = c;
         }
     }
-    buf[i] = 0;
-    va_end(ap);
+    
+    str[i] = '\0';
     return i;
+}
+
+// Einfache snprintf-Implementierung
+int snprintf(char* str, size_t size, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int result = vsnprintf(str, size, format, args);
+    va_end(args);
+    return result;
 }

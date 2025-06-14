@@ -1,89 +1,107 @@
 #include "keyboard.h"
+#include "error.h"
+#include "minilibc.h"
 #include "io.h"
+#include "timer.h"
 
-static keyboard_layout_t current_layout = LAYOUT_QWERTY;
-static int shift_pressed = 0;
+#define KEYBOARD_DATA_PORT    0x60
+#define KEYBOARD_STATUS_PORT  0x64
+#define KEYBOARD_COMMAND_PORT 0x64
 
-static const uint16_t qwerty_layout[] = {
-    0, KEY_ESC, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0,
-    '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' ',
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    KEY_UP, 0, KEY_LEFT, 0, KEY_RIGHT, 0, KEY_DOWN
-};
-static const uint16_t qwertz_layout[] = {
-    0, KEY_ESC, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0,
-    '\\', 'y', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' ',
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    KEY_UP, 0, KEY_LEFT, 0, KEY_RIGHT, 0, KEY_DOWN
-};
-static const uint16_t qwerty_shifted[] = {
-    0, KEY_ESC, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
-    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', 0,
-    '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' ',
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    KEY_UP, 0, KEY_LEFT, 0, KEY_RIGHT, 0, KEY_DOWN
-};
-static const uint16_t qwertz_shifted[] = {
-    0, KEY_ESC, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
-    '\t', 'Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', '{', '}', '\n',
-    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', 0,
-    '|', 'Y', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' ',
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    KEY_UP, 0, KEY_LEFT, 0, KEY_RIGHT, 0, KEY_DOWN
-};
+#define KEYBOARD_BUFFER_SIZE 256
+static uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];
+static int keyboard_buffer_head = 0;
+static int keyboard_buffer_tail = 0;
 
-void set_keyboard_layout(keyboard_layout_t layout) {
-    current_layout = layout;
+static error_code_t last_error = ERR_NONE;
+
+int keyboard_init(void) {
+    // Warte auf Keyboard-Controller
+    int timeout = 1000;
+    while (timeout--) {
+        if ((inb(KEYBOARD_STATUS_PORT) & 0x02) == 0) {
+            break;
+        }
+        // Warte 1ms
+        for(volatile int i = 0; i < 1000000; i++);
+    }
+    
+    if (timeout == 0) {
+        ERROR_SET(ERR_WARN_DEVICE_BUSY, "Keyboard controller not responding");
+        return 0;
+    }
+    
+    // Setze Keyboard-Controller
+    outb(KEYBOARD_COMMAND_PORT, 0xAE); // Enable keyboard
+    outb(KEYBOARD_COMMAND_PORT, 0x20); // Get command byte
+    uint8_t status = inb(KEYBOARD_DATA_PORT);
+    status |= 0x01; // Enable keyboard interrupt
+    outb(KEYBOARD_COMMAND_PORT, 0x60); // Set command byte
+    outb(KEYBOARD_DATA_PORT, status);
+    
+    return 1;
 }
 
-const char* get_layout_name(void) {
-    return (current_layout == LAYOUT_QWERTY) ? "QWERTY" : "QWERTZ";
-}
-
-uint16_t scancode_to_ascii(uint8_t scancode) {
-    // Handle special case for ESC key (scancode 0x01)
-    if (scancode == 0x01) return KEY_ESC;
-
-    if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; return 0; }
-    if (scancode == 0xAA || scancode == 0xB6) { shift_pressed = 0; return 0; }
-    static int is_extended = 0;
-    if (scancode == 0xE0) { is_extended = 1; return 0; }
-    if (is_extended && (scancode & 0x80)) { is_extended = 0; return 0; }
-    if (is_extended) {
-        is_extended = 0;
-        switch (scancode) {
-            case 0x48: return KEY_UP;
-            case 0x50: return KEY_DOWN;
-            case 0x4B: return KEY_LEFT;
-            case 0x4D: return KEY_RIGHT;
-            case 0x47: return KEY_HOME;
-            case 0x4F: return KEY_END;
-            case 0x49: return KEY_PGUP;
-            case 0x51: return KEY_PGDN;
-            case 0x53: return KEY_DEL;
-            default: return 0;
+void keyboard_handler(void) {
+    uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+    uint16_t ascii = scancode_to_ascii(scancode);
+    
+    if (ascii) {
+        int next = (keyboard_buffer_head + 1) % KEYBOARD_BUFFER_SIZE;
+        if (next != keyboard_buffer_tail) {
+            keyboard_buffer[keyboard_buffer_head] = ascii;
+            keyboard_buffer_head = next;
+        } else {
+            ERROR_SET(ERR_WARN_DEVICE_BUSY, "Keyboard buffer overflow");
         }
     }
-    if (scancode & 0x80) return 0;
-    const uint16_t* layout_table;
-    if (shift_pressed) {
-        layout_table = (current_layout == LAYOUT_QWERTY) ? qwerty_shifted : qwertz_shifted;
-    } else {
-        layout_table = (current_layout == LAYOUT_QWERTY) ? qwerty_layout : qwertz_layout;
-    }
-    if (scancode < 58) return layout_table[scancode];
-    return 0;
 }
 
-uint16_t get_keyboard_char(void) {
-    // Poll the keyboard controller for a keypress
-    if ((inb(0x64) & 0x01) == 0)
-        return 0; // No key available
-    uint8_t scancode = inb(0x60);
-    return scancode_to_ascii(scancode);
+uint16_t keyboard_getchar(void) {
+    if (keyboard_buffer_head == keyboard_buffer_tail) {
+        return 0;
+    }
+    
+    uint16_t result = keyboard_buffer[keyboard_buffer_tail];
+    keyboard_buffer_tail = (keyboard_buffer_tail + 1) % KEYBOARD_BUFFER_SIZE;
+    return result;
+}
+
+int keyboard_is_key_pressed(uint8_t scancode) {
+    if (!(inb(KEYBOARD_STATUS_PORT) & 0x01)) {
+        return 0;
+    }
+    
+    uint8_t current_scancode = inb(KEYBOARD_DATA_PORT);
+    return (current_scancode == scancode);
+}
+
+void keyboard_wait_for_key(void) {
+    while (!(inb(KEYBOARD_STATUS_PORT) & 0x01)) {
+        asm volatile("hlt");
+    }
+}
+
+error_code_t keyboard_get_last_error(void) {
+    return last_error;
+}
+
+const char* keyboard_get_error_message(void) {
+    return error_to_string(last_error);
+}
+
+// Scancode-Tabelle für US-Layout
+static const uint16_t scancode_table[] = {
+    0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+    '*', 0, ' ', 0
+};
+
+uint16_t scancode_to_ascii(uint8_t scancode) {
+    if (scancode >= sizeof(scancode_table) / sizeof(scancode_table[0])) {
+        return 0;
+    }
+    return scancode_table[scancode];
 }

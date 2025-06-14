@@ -1,9 +1,18 @@
 #include "boot.h"
+#include "error.h"
+#include "minilibc.h"
 #include "terminal.h"
+#include "shutdown.h"
+#include "reboot.h"
 #include "memory.h"
 #include "timer.h"
+#include "debug.h"
+#include "opfs.h"
 #include "keyboard.h"
 #include "io.h"
+
+// Forward-Deklaration
+int test_memory(void);
 
 void halt() {
     asm volatile ("cli; hlt");
@@ -38,16 +47,19 @@ int test_keyboard() {
     return 0;
 }
 
-int test_timer() {
+static int test_timer(void) {
     terminal_writestring("Testing timer... ");
-    uint32_t start = get_system_ticks();
-    delay_ms(100);
-    uint32_t end = get_system_ticks();
+    uint32_t start = get_timer_ticks();
+    // Warte eine kurze Zeit
+    for(volatile int i = 0; i < 1000000; i++);
+    uint32_t end = get_timer_ticks();
+    
     if (end > start) {
-        terminal_writestring("[OK]\n");
+        terminal_writestring("OK\n");
         return 1;
     }
-    terminal_writestring("[FAIL]\n");
+    
+    terminal_writestring("FAILED\n");
     return 0;
 }
 

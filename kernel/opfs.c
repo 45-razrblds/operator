@@ -2,14 +2,18 @@
 #include "terminal.h"
 #include "memory.h"
 #include "minilibc.h"
-uint16_t get_keyboard_char(void);
+#include "error.h"
+#include "keyboard.h"
+
 #define OPFS_MAX_FILES 32
 #define OPFS_MAX_DIRS 16
 #define OPFS_MAX_FILENAME 32
 #define OPFS_MAX_FILESIZE 1024
 #define OPFS_MAX_PATH 128
 #define OPFS_MAX_CHILDREN 16
+
 typedef enum { OPFS_FILE, OPFS_DIR } opfs_type_t;
+
 typedef struct opfs_node {
     opfs_type_t type;
     char name[OPFS_MAX_FILENAME];
@@ -27,16 +31,21 @@ typedef struct opfs_node {
         } dir;
     } data;
 } opfs_node_t;
+
 static opfs_node_t opfs_root;
 static opfs_node_t* opfs_cwd = &opfs_root;
-void opfs_init() {
+
+int opfs_init(void) {
     memset(&opfs_root, 0, sizeof(opfs_root));
     opfs_root.type = OPFS_DIR;
     strcpy(opfs_root.name, "/");
     opfs_root.parent = NULL;
     opfs_root.data.dir.child_count = 0;
     opfs_cwd = &opfs_root;
-    opfs_node_t* f1 = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    opfs_node_t* f1 = (opfs_node_t*)kmalloc(sizeof(opfs_node_t));
+    if (!f1) {
+        return -1;
+    }
     memset(f1, 0, sizeof(opfs_node_t));
     f1->type = OPFS_FILE;
     strcpy(f1->name, "readme.txt");
@@ -44,7 +53,10 @@ void opfs_init() {
     f1->data.file.size = strlen(f1->data.file.content);
     f1->parent = &opfs_root;
     opfs_root.data.dir.children[opfs_root.data.dir.child_count++] = f1;
-    opfs_node_t* f2 = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    opfs_node_t* f2 = (opfs_node_t*)kmalloc(sizeof(opfs_node_t));
+    if (!f2) {
+        return -1;
+    }
     memset(f2, 0, sizeof(opfs_node_t));
     f2->type = OPFS_FILE;
     strcpy(f2->name, "notes.txt");
@@ -52,7 +64,9 @@ void opfs_init() {
     f2->data.file.size = strlen(f2->data.file.content);
     f2->parent = &opfs_root;
     opfs_root.data.dir.children[opfs_root.data.dir.child_count++] = f2;
+    return 0;
 }
+
 static opfs_node_t* opfs_find_in_dir(opfs_node_t* dir, const char* name) {
     if (!dir || dir->type != OPFS_DIR) return NULL;
     for (int i = 0; i < dir->data.dir.child_count; i++) {
@@ -62,6 +76,7 @@ static opfs_node_t* opfs_find_in_dir(opfs_node_t* dir, const char* name) {
     }
     return NULL;
 }
+
 static opfs_node_t* opfs_resolve(const char* path) {
     if (!path || !*path) return opfs_cwd;
     opfs_node_t* node = (path[0] == '/') ? &opfs_root : opfs_cwd;
@@ -80,6 +95,7 @@ static opfs_node_t* opfs_resolve(const char* path) {
     }
     return node;
 }
+
 void opfs_ls(const char* path) {
     opfs_node_t* dir = path ? opfs_resolve(path) : opfs_cwd;
     if (!dir || dir->type != OPFS_DIR) {
@@ -101,6 +117,7 @@ void opfs_ls(const char* path) {
     }
     terminal_set_color(0x07);
 }
+
 void opfs_cat(const char* path) {
     opfs_node_t* f = opfs_resolve(path);
     if (!f || f->type != OPFS_FILE) {
@@ -111,6 +128,7 @@ void opfs_cat(const char* path) {
     terminal_writestring("\n");
     terminal_set_color(0x07);
 }
+
 void opfs_touch(const char* path) {
     char buf[OPFS_MAX_PATH]; strncpy(buf, path, OPFS_MAX_PATH-1); buf[OPFS_MAX_PATH-1]=0;
     char* last = strrchr(buf, '/');
@@ -123,7 +141,7 @@ void opfs_touch(const char* path) {
     }
     if (!dir || dir->type != OPFS_DIR) { terminal_set_color(0x0C); terminal_writestring("Invalid path.\n"); terminal_set_color(0x07); return; }
     if (opfs_find_in_dir(dir, fname)) { terminal_writestring("File exists.\n"); return; }
-    opfs_node_t* f = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    opfs_node_t* f = (opfs_node_t*)kmalloc(sizeof(opfs_node_t));
     memset(f, 0, sizeof(opfs_node_t));
     f->type = OPFS_FILE;
     strcpy(f->name, fname);
@@ -132,38 +150,80 @@ void opfs_touch(const char* path) {
     terminal_writestring("File created.\n");
     opfs_save();
 }
+
 void opfs_edit(const char* path) {
-    opfs_node_t* f = opfs_resolve(path);
-    if (!f || f->type != OPFS_FILE) {
-        terminal_set_color(0x0C); terminal_writestring("File not found.\n"); terminal_set_color(0x07); return;
+    // Öffne Datei zum Lesen
+    opfs_file_t file;
+    if (opfs_open(&file, path, OPFS_MODE_READ) != 0) {
+        error_print();
+        return;
     }
-    terminal_set_color(0x0D);
-    terminal_writestring("Editing "); terminal_writestring(f->name); terminal_writestring(". Press ESC to save and exit.\n"); terminal_set_color(0x07);
+
+    // Lese Dateiinhalt
+    char* content = kmalloc(file.size + 1);
+    if (!content) {
+        error_set(ERR_OUT_OF_MEMORY);
+        error_print();
+        opfs_close(&file);
+        return;
+    }
+
+    if (opfs_read(&file, content, file.size) != file.size) {
+        error_print();
+        kfree(content);
+        opfs_close(&file);
+        return;
+    }
+    content[file.size] = '\0';
+    opfs_close(&file);
+
+    // Öffne Datei zum Schreiben
+    if (opfs_open(&file, path, OPFS_MODE_WRITE) != 0) {
+        error_print();
+        kfree(content);
+        return;
+    }
+
+    // Zeige Inhalt und erlaube Bearbeitung
+    terminal_writestring("Editing file. Press ESC to save and exit.\n");
+    terminal_writestring(content);
+
     int pos = 0;
-    memset(f->data.file.content, 0, OPFS_MAX_FILESIZE);
+    int len = strlen(content);
     while (1) {
-        uint16_t c = get_keyboard_char();
-        if (c == 27) break;
-        if (c == '\r' || c == '\n') { 
-            f->data.file.content[pos++] = '\n'; 
-            terminal_putchar('\n');
-        }
-        else if (c == '\b') { 
-            if (pos > 0) { 
-                pos--; 
+        uint16_t key = keyboard_getchar();
+        if (key == 0x1B) {  // ESC
+            break;
+        } else if (key == '\b') {  // Backspace
+            if (pos > 0) {
+                pos--;
+                len--;
+                memmove(content + pos, content + pos + 1, len - pos);
+                content[len] = '\0';
+                terminal_putchar('\b');
+                terminal_putchar(' ');
                 terminal_putchar('\b');
             }
-        }
-        else if (pos < OPFS_MAX_FILESIZE-1 && c >= 32 && c < 127) { 
-            f->data.file.content[pos++] = (char)c;
-            terminal_putchar((char)c);
+        } else if (key < 0x100) {  // Normales Zeichen
+            if (len < file.size) {
+                memmove(content + pos + 1, content + pos, len - pos);
+                content[pos] = key;
+                pos++;
+                len++;
+                content[len] = '\0';
+                terminal_putchar(key);
+            }
         }
     }
-    f->data.file.content[pos] = 0;
-    f->data.file.size = pos;
-    terminal_writestring("\nSaved.\n");
-    opfs_save();
+
+    // Speichere Änderungen
+    if (opfs_write(&file, content, len) != len) {
+        error_print();
+    }
+    opfs_close(&file);
+    kfree(content);
 }
+
 void opfs_rm(const char* path) {
     opfs_node_t* f = opfs_resolve(path);
     if (!f || f == &opfs_root || !f->parent) { terminal_writestring("Cannot remove.\n"); return; }
@@ -180,6 +240,7 @@ void opfs_rm(const char* path) {
     }
     opfs_save();
 }
+
 void opfs_mkdir(const char* path) {
     char buf[OPFS_MAX_PATH]; strncpy(buf, path, OPFS_MAX_PATH-1); buf[OPFS_MAX_PATH-1]=0;
     char* last = strrchr(buf, '/');
@@ -188,7 +249,7 @@ void opfs_mkdir(const char* path) {
     if (last) { *last = 0; dir = opfs_resolve(buf); dname = last+1; }
     if (!dir || dir->type != OPFS_DIR) { terminal_set_color(0x0C); terminal_writestring("Invalid path.\n"); terminal_set_color(0x07); return; }
     if (opfs_find_in_dir(dir, dname)) { terminal_writestring("Exists.\n"); return; }
-    opfs_node_t* d = (opfs_node_t*)malloc(sizeof(opfs_node_t));
+    opfs_node_t* d = (opfs_node_t*)kmalloc(sizeof(opfs_node_t));
     memset(d, 0, sizeof(opfs_node_t));
     d->type = OPFS_DIR;
     strcpy(d->name, dname);
@@ -197,11 +258,13 @@ void opfs_mkdir(const char* path) {
     terminal_writestring("Directory created.\n");
     opfs_save();
 }
+
 void opfs_cd(const char* path) {
     opfs_node_t* d = opfs_resolve(path);
     if (!d || d->type != OPFS_DIR) { terminal_set_color(0x0C); terminal_writestring("Not a directory.\n"); terminal_set_color(0x07); return; }
     opfs_cwd = d;
 }
+
 void opfs_pwd() {
     char stack[OPFS_MAX_PATH][OPFS_MAX_FILENAME];
     int sp = 0;
@@ -217,10 +280,13 @@ void opfs_pwd() {
     }
     terminal_writestring("\n");
 }
+
 void opfs_load(void) {
-    // TODO: Load OPFS from disk (e.g., read from a file or block device)
     // For now, just call opfs_init as fallback
-    opfs_init();
+    if (opfs_init() != 0) {
+        terminal_writestring("Fehler: OPFS-Initialisierung fehlgeschlagen\n");
+        return;
+    }
 }
 
 void opfs_save(void) {

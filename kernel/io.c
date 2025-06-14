@@ -1,4 +1,13 @@
-#include <stdint.h>
+#include "io.h"
+#include "error.h"
+
+// I/O-Port-Verfügbarkeit prüfen
+int io_port_available(uint16_t port) {
+    // In einer realen Implementierung würden wir hier prüfen,
+    // ob der Port tatsächlich verfügbar ist. Für jetzt
+    // nehmen wir an, dass alle Ports verfügbar sind.
+    return 1;
+}
 
 // Read a byte from the specified port
 uint8_t inb(uint16_t port) {

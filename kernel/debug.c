@@ -11,6 +11,10 @@ extern uint16_t* terminal_buffer;
 extern uint16_t terminal_row;
 extern uint16_t terminal_column;
 extern uint8_t terminal_color;
+int debug_init(void) {
+    debug_mode = 0;
+    return 1;
+}
 void draw_debug_info() {
     if (!debug_mode) return;
     uint16_t old_row = terminal_row;
