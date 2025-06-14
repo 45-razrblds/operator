@@ -13,7 +13,7 @@ static uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];
 static int keyboard_buffer_head = 0;
 static int keyboard_buffer_tail = 0;
 
-static error_code_t last_error = ERR_NONE;
+static enum error_code_t last_error = ERR_NONE;
 
 int keyboard_init(void) {
     // Warte auf Keyboard-Controller
@@ -27,7 +27,7 @@ int keyboard_init(void) {
     }
     
     if (timeout == 0) {
-        ERROR_SET(ERR_WARN_DEVICE_BUSY, "Keyboard controller not responding");
+        ERROR_SET(ERR_DEVICE_BUSY, "Keyboard controller not responding");
         return 0;
     }
     
@@ -52,7 +52,7 @@ void keyboard_handler(void) {
             keyboard_buffer[keyboard_buffer_head] = ascii;
             keyboard_buffer_head = next;
         } else {
-            ERROR_SET(ERR_WARN_DEVICE_BUSY, "Keyboard buffer overflow");
+            ERROR_SET(ERR_DEVICE_BUSY, "Keyboard buffer overflow");
         }
     }
 }
@@ -82,7 +82,7 @@ void keyboard_wait_for_key(void) {
     }
 }
 
-error_code_t keyboard_get_last_error(void) {
+enum error_code_t keyboard_get_last_error(void) {
     return last_error;
 }
 

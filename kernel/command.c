@@ -9,7 +9,7 @@
 #include "debug.h"
 #include "opfs.h"
 #include "boot.h"
-#include "serial.h"
+// #include "serial.h"
 
 // Command-Buffer
 char input_buffer[256];

@@ -152,76 +152,55 @@ void opfs_touch(const char* path) {
 }
 
 void opfs_edit(const char* path) {
-    // Öffne Datei zum Lesen
-    opfs_file_t file;
-    if (opfs_open(&file, path, OPFS_MODE_READ) != 0) {
-        error_print();
+    opfs_node_t* f = opfs_resolve(path);
+    if (!f || f->type != OPFS_FILE) {
+        terminal_set_color(0x0C);
+        terminal_writestring("File not found.\n");
+        terminal_set_color(0x07);
         return;
     }
 
-    // Lese Dateiinhalt
-    char* content = kmalloc(file.size + 1);
-    if (!content) {
-        error_set(ERR_OUT_OF_MEMORY);
-        error_print();
-        opfs_close(&file);
-        return;
-    }
-
-    if (opfs_read(&file, content, file.size) != file.size) {
-        error_print();
-        kfree(content);
-        opfs_close(&file);
-        return;
-    }
-    content[file.size] = '\0';
-    opfs_close(&file);
-
-    // Öffne Datei zum Schreiben
-    if (opfs_open(&file, path, OPFS_MODE_WRITE) != 0) {
-        error_print();
-        kfree(content);
-        return;
-    }
-
-    // Zeige Inhalt und erlaube Bearbeitung
+    terminal_set_color(0x0A);
     terminal_writestring("Editing file. Press ESC to save and exit.\n");
-    terminal_writestring(content);
+    terminal_writestring(f->data.file.content);
+    terminal_writestring("\n");
+    terminal_set_color(0x07);
 
-    int pos = 0;
-    int len = strlen(content);
+    int pos = strlen(f->data.file.content);
     while (1) {
         uint16_t key = keyboard_getchar();
-        if (key == 0x1B) {  // ESC
-            break;
-        } else if (key == '\b') {  // Backspace
-            if (pos > 0) {
-                pos--;
-                len--;
-                memmove(content + pos, content + pos + 1, len - pos);
-                content[len] = '\0';
-                terminal_putchar('\b');
-                terminal_putchar(' ');
-                terminal_putchar('\b');
-            }
-        } else if (key < 0x100) {  // Normales Zeichen
-            if (len < file.size) {
-                memmove(content + pos + 1, content + pos, len - pos);
-                content[pos] = key;
-                pos++;
-                len++;
-                content[len] = '\0';
-                terminal_putchar(key);
-            }
+        if (key == 0x1B) break; // ESC
+        else if (key < 0x100 && pos < OPFS_MAX_FILESIZE - 1) {
+            f->data.file.content[pos++] = key;
+            f->data.file.content[pos] = 0;
+            terminal_putchar(key);
         }
     }
+    f->data.file.size = pos;
+    opfs_save();
+}
 
-    // Speichere Änderungen
-    if (opfs_write(&file, content, len) != len) {
-        error_print();
+void opfs_write(const char* path, const char* content, size_t len) {
+    opfs_node_t* f = opfs_resolve(path);
+    if (!f || f->type != OPFS_FILE) {
+        terminal_set_color(0x0C);
+        terminal_writestring("File not found.\n");
+        terminal_set_color(0x07);
+        return;
     }
-    opfs_close(&file);
-    kfree(content);
+
+    if (len >= OPFS_MAX_FILESIZE) {
+        terminal_set_color(0x0C);
+        terminal_writestring("Content too large.\n");
+        terminal_set_color(0x07);
+        return;
+    }
+
+    memcpy(f->data.file.content, content, len);
+    f->data.file.content[len] = '\0';
+    f->data.file.size = len;
+
+    opfs_save();
 }
 
 void opfs_rm(const char* path) {
